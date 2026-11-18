@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.18-3';
+import { createStore, newId } from './store.js?v=2026.11.18-4';
 
-const APP_VERSION = '2026.11.18-3';
+const APP_VERSION = '2026.11.18-4';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -57,6 +57,7 @@ const state = {
   ownerEmail: null,  // the one "master" account (whoever set the app up)
   locId: (() => { try { return localStorage.getItem('hgui_loc'); } catch { return null; } })(),
   log: null, logKey: '', logWeek: weekStart(new Date()), logRoom: '',
+  someRooms: new Set(), // "leaderId|locId" where "Only some rooms" is picked but nothing checked yet
 };
 let store;
 
@@ -371,16 +372,29 @@ const fold = (key, title, count, inner) => `
     <div class="fold-body">${inner}</div>
   </section>`;
 
-// Access checkboxes for one location: "All of <location>" plus each of its rooms.
-// l is the leader being edited (null for the Add leader form).
-function accessChecks(loc, l, attrs = () => '') {
-  const whole = leaderLocs(l).includes(loc.id);
-  const picked = l?.rooms || [];
-  return `<div class="room-checks"><small>${esc(loc.name)}</small>
-    <label class="check"><input type="checkbox" name="locs" value="${esc(loc.id)}" ${whole ? 'checked' : ''} ${attrs('loc')}>
-      <span>All of ${esc(loc.name)}<small class="muted block">Every room here, including rooms added later</small></span></label>
-    ${roomsIn(loc.id).map((r) => `
-      <label class="check sub"><input type="checkbox" name="rooms" value="${esc(r.id)}" ${whole || picked.includes(r.id) ? 'checked' : ''} ${whole ? 'disabled' : ''} ${attrs('room')}> ${esc(r.name)}</label>`).join('')}
+// Access in one location: a dropdown (No access / All rooms / Only some rooms),
+// plus room checkboxes when "Only some rooms" is picked. l = leader being edited, or null for the Add form.
+function accessMode(l, loc) {
+  if (leaderLocs(l).includes(loc.id)) return 'all';
+  if (roomsIn(loc.id).some((r) => (l?.rooms || []).includes(r.id)) || state.someRooms.has(`${l?.id}|${loc.id}`)) return 'some';
+  return 'none';
+}
+function accessPicker(loc, l) {
+  const mode = l ? accessMode(l, loc) : 'all';
+  const who = l ? `data-leader="${esc(l.id)}"` : '';
+  const rooms = roomsIn(loc.id);
+  return `<div class="room-checks access">
+    <label>Access in ${esc(loc.name)}
+      <select name="access" ${who} data-lf="access" data-loc="${esc(loc.id)}">
+        ${l ? `<option value="none" ${mode === 'none' ? 'selected' : ''}>No access</option>` : ''}
+        <option value="all" ${mode === 'all' ? 'selected' : ''}>All rooms (includes rooms added later)</option>
+        <option value="some" ${mode === 'some' ? 'selected' : ''} ${rooms.length ? '' : 'disabled'}>Only some rooms</option>
+      </select>
+    </label>
+    ${l ? '' : `<input type="hidden" name="accessLoc" value="${esc(loc.id)}">`}
+    <div class="some-rooms" ${mode === 'some' ? '' : 'hidden'}>
+      ${rooms.map((r) => `<label class="check sub"><input type="checkbox" name="rooms" value="${esc(r.id)}" ${(l?.rooms || []).includes(r.id) ? 'checked' : ''} ${l ? `${who} data-lf="room"` : ''}> ${esc(r.name)}</label>`).join('')}
+    </div>
   </div>`;
 }
 
@@ -392,7 +406,8 @@ function accessIn(l, loc) {
   const rs = roomsIn(loc.id).filter((r) => (l.rooms || []).includes(r.id)).map((r) => r.name);
   return rs.length ? rs.join(', ') : `No access to ${loc.name}`;
 }
-const hasAccessIn = (l, loc) => isOwnerL(l) || leaderLocs(l).includes(loc.id) || roomsIn(loc.id).some((r) => (l.rooms || []).includes(r.id));
+const hasAccessIn = (l, loc) => isOwnerL(l) || leaderLocs(l).includes(loc.id) || roomsIn(loc.id).some((r) => (l.rooms || []).includes(r.id))
+  || state.someRooms.has(`${l.id}|${loc.id}`);
 // Location admins can only fully manage (reset password, remove) leaders whose access is all inside their locations.
 const leaderInsideMine = (l) => {
   const mine = leaderLocs(me());
@@ -504,23 +519,19 @@ function viewSettings() {
       <input name="name" placeholder="e.g. Awana" required><button class="primary">Add</button>
     </form>` : ''}`;
 
-  const leaders = [...state.leaders].sort(byName);
+  // Each location lists only its own people (the owner isn't listed; they're everywhere).
+  const leaders = [...state.leaders].sort(byName)
+    .filter((l) => !isOwnerL(l) && (hasAccessIn(l, loc) || adminOfL(l, loc.id) || state.leaderEdit === l.id));
+  const others = [...state.leaders].sort(byName)
+    .filter((l) => !isOwnerL(l) && !hasAccessIn(l, loc) && !adminOfL(l, loc.id) && canEditLeader(l));
   const leadersHtml = `
-    <p class="muted small">Showing access to <b>${esc(loc.name)}</b>.${myLocations().length > 1 ? ' Switch locations at the top to set access there.' : ''}
-      ${isOwner() ? 'Admins run only the locations you give them.' : 'Only the owner can add or change admins.'}</p>
-    <form data-form="addLeader" class="stack" autocomplete="off">
-      <input name="name" placeholder="Name" required>
-      <input name="username" placeholder="Username" required autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off">
-      <input name="password" placeholder="Password (6+ characters)" required minlength="6" autocomplete="new-password">
-      ${isOwner() ? '<select name="role"><option value="leader">Leader</option><option value="admin">Admin (runs the locations checked as "All of")</option></select>' : '<input type="hidden" name="role" value="leader">'}
-      ${accessChecks(loc, null)}
-      <button class="primary wide">Add leader</button>
-    </form>
+    <p class="muted small">People with access to <b>${esc(loc.name)}</b>.${myLocations().length > 1 ? ' Switch locations at the top for the others.' : ''}
+      ${isOwner() ? '' : ' Only the owner can add or change admins.'}</p>
     <ul class="leaders">
       ${leaders.map((l) => {
         const editing = state.leaderEdit === l.id && canEditLeader(l);
         const self = l.id === state.user.email;
-        return `<li class="${hasAccessIn(l, loc) ? '' : 'no-access'}">
+        return `<li>
           <div class="row">
             <span class="grow"><b>${esc(l.name)}</b> <em class="badge">${roleOf(l)}</em>${self ? ' <small class="muted">you</small>' : ''}
               <small class="email">Username: ${esc(usernameOf(l))}</small><small class="email">${esc(accessIn(l, loc))}</small></span>
@@ -529,16 +540,33 @@ function viewSettings() {
           ${editing ? `<div class="leader-edit">
             ${isOwner() ? `<label>Role<select data-leader="${esc(l.id)}" data-lf="role"><option value="leader" ${l.admin ? '' : 'selected'}>Leader</option><option value="admin" ${l.admin ? 'selected' : ''}>Admin</option></select></label>` : ''}
             ${l.admin
-              ? `<label class="check"><input type="checkbox" ${leaderLocs(l).includes(loc.id) ? 'checked' : ''} value="${esc(loc.id)}" data-leader="${esc(l.id)}" data-lf="loc"> Admin of ${esc(loc.name)}</label>`
-              : `<p class="small"><b>Access in ${esc(loc.name)}</b></p>${accessChecks(loc, l, (kind) => `data-leader="${esc(l.id)}" data-lf="${kind}"`)}`}
+              ? `<div class="room-checks"><small>Admin of</small>${locations().map((x) => `
+                  <label class="check"><input type="checkbox" ${leaderLocs(l).includes(x.id) ? 'checked' : ''} value="${esc(x.id)}" data-leader="${esc(l.id)}" data-lf="loc"> ${esc(x.name)}</label>`).join('')}</div>`
+              : accessPicker(loc, l)}
             ${canFullyManage(l) ? `
               <button class="ghost wide" data-act="setPassword" data-id="${esc(l.id)}">Set a new password</button>
               <button class="ghost wide danger" data-act="delLeader" data-id="${esc(l.id)}">Remove leader</button>`
               : '<p class="muted small">This leader also works in another location, so only the owner can reset their password or remove them.</p>'}
           </div>` : ''}
         </li>`;
-      }).join('')}
-    </ul>`;
+      }).join('') || `<li class="muted small">No one has access to ${esc(loc.name)} yet.</li>`}
+    </ul>
+    ${others.length ? `
+    <h3>Add an existing leader to ${esc(loc.name)}</h3>
+    <form data-form="addExisting" class="row">
+      <select name="id" required><option value="">Choose a leader…</option>${others.map((l) =>
+        `<option value="${esc(l.id)}">${esc(l.name)}${l.admin ? ' (admin)' : ''}</option>`).join('')}</select>
+      <button class="primary">Add</button>
+    </form>` : ''}
+    <h3>Add a new leader</h3>
+    <form data-form="addLeader" class="stack" autocomplete="off">
+      <input name="name" placeholder="Name" required>
+      <input name="username" placeholder="Username" required autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off">
+      <input name="password" placeholder="Password (6+ characters)" required minlength="6" autocomplete="new-password">
+      ${isOwner() ? `<select name="role"><option value="leader">Leader</option><option value="admin">Admin of ${esc(loc.name)}</option></select>` : '<input type="hidden" name="role" value="leader">'}
+      ${accessPicker(loc, null)}
+      <button class="primary wide">Add leader</button>
+    </form>`;
 
   const head = `
     ${locPicker}
@@ -1007,6 +1035,14 @@ const forms = {
     store.add('categories', { roomId: state.roomId, name, points, order: max + 1 });
     logIt(`Added category "${name}" (${signed(points)})`, 'add', nowWeek());
   },
+  addExisting: (f) => {
+    const l = state.leaders.find((x) => x.id === f.get('id'));
+    const loc = curLoc();
+    if (!l || !loc || !canEditLeader(l)) return false;
+    store.update('leaders', l.id, { locations: [...new Set([...leaderLocs(l), loc.id])] });
+    state.leaderEdit = l.id; // open their access so it can be narrowed to some rooms
+    toast(`${esc(l.name)} ${l.admin ? 'now runs' : 'can now use all rooms in'} ${esc(loc.name)}.`);
+  },
   changeUsername: async (f) => {
     const l = me();
     const username = normUser(f.get('username'));
@@ -1058,8 +1094,11 @@ const forms = {
     const username = normUser(f.get('username'));
     const pw = f.get('password');
     const admin = isOwner() && f.get('role') === 'admin';
-    const rooms = admin ? [] : f.getAll('rooms');
-    const locs = admin ? [] : f.getAll('locs');
+    const accessLoc = f.get('accessLoc');
+    const some = f.get('access') === 'some';
+    const rooms = admin || !some ? [] : f.getAll('rooms');
+    const locs = admin || !some ? [accessLoc] : [];
+    if (!admin && some && !rooms.length) { alert('Check at least one room, or pick "All rooms".'); return false; }
     if (!/^[a-z0-9][a-z0-9._@+-]{1,59}$/.test(username)) {
       alert('Usernames can use letters, numbers, dots, dashes, and underscores (no spaces).');
       return false;
@@ -1110,15 +1149,29 @@ app.addEventListener('change', (e) => {
     const toggle = (list) => { const set = new Set(list || []); if (el.checked) set.add(el.value); else set.delete(el.value); return [...set]; };
     if (el.dataset.lf === 'role' && isOwner()) store.update('leaders', l.id, { admin: el.value === 'admin', rooms: l.rooms || [], locations: leaderLocs(l) });
     if (el.dataset.lf === 'room') store.update('leaders', l.id, { rooms: toggle(l.rooms) });
-    if (el.dataset.lf === 'loc') store.update('leaders', l.id, { locations: toggle(l.locations) });
+    if (el.dataset.lf === 'loc' && (isOwner() || !l.admin)) store.update('leaders', l.id, { locations: toggle(l.locations) });
+    if (el.dataset.lf === 'access') {
+      const locId = el.dataset.loc;
+      const key = `${l.id}|${locId}`;
+      const here = new Set(roomsIn(locId).map((r) => r.id));
+      const locsWithout = leaderLocs(l).filter((x) => x !== locId);
+      state.someRooms.delete(key);
+      if (el.value === 'all') store.update('leaders', l.id, { locations: [...locsWithout, locId] });
+      if (el.value === 'none') {
+        store.update('leaders', l.id, { locations: locsWithout, rooms: (l.rooms || []).filter((id) => !here.has(id)) });
+        state.leaderEdit = null;
+        toast(`${esc(l.name)} no longer has access to ${esc(state.locations.find((x) => x.id === locId)?.name || 'this location')}.`);
+      }
+      if (el.value === 'some') { state.someRooms.add(key); store.update('leaders', l.id, { locations: locsWithout }); }
+    }
+    el.blur(); // let the list refresh right away
+    render();
     return;
   }
-  // Add leader form: "All of <location>" covers its rooms, so grey them out.
-  if (el.name === 'locs' && el.form) {
-    el.closest('.room-checks')?.querySelectorAll('input[name="rooms"]').forEach((box) => {
-      box.disabled = el.checked;
-      if (el.checked) box.checked = true;
-    });
+  // Add leader form: show the room checkboxes only for "Only some rooms".
+  if (el.dataset.lf === 'access' && el.form) {
+    const box = el.closest('.room-checks')?.querySelector('.some-rooms');
+    if (box) box.hidden = el.value !== 'some';
     return;
   }
   if (!el.dataset.col) return;
