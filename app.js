@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.18-2';
+import { createStore, newId } from './store.js?v=2026.11.18-3';
 
-const APP_VERSION = '2026.11.18-2';
+const APP_VERSION = '2026.11.18-3';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -54,6 +54,9 @@ const state = {
   authMsg: '',
   leaderEdit: null,
   migrating: false,
+  ownerEmail: null,  // the one "master" account (whoever set the app up)
+  locId: (() => { try { return localStorage.getItem('hgui_loc'); } catch { return null; } })(),
+  log: null, logKey: '', logWeek: weekStart(new Date()), logRoom: '',
 };
 let store;
 
@@ -69,13 +72,25 @@ let pendingImport = (() => {
 })();
 
 const me = () => state.leaders.find((l) => l.id === state.user?.email);
-const isAdmin = () => !!me()?.admin;
 const locations = () => [...state.locations].sort(byOrder);
 const roomsIn = (locId) => state.rooms.filter((r) => r.locationId === locId).sort(byOrder);
+
+/* ---------- who can do what ----------
+   Owner:  the account that set the app up. Everything, everywhere. Only one who manages locations and admins.
+   Admin:  `admin: true` + `locations` = the locations they run. Full control there, nothing elsewhere.
+   Leader: `rooms` (single rooms) and/or `locations` (every room in that location). Attendance + points only. */
+const leaderLocs = (l) => l?.locations || [];
+const isOwnerL = (l) => !!l && !!state.ownerEmail && l.id === state.ownerEmail;
+const isOwner = () => isOwnerL(me());
+const adminOfL = (l, locId) => isOwnerL(l) || (!!l?.admin && leaderLocs(l).includes(locId));
+const adminOf = (locId) => adminOfL(me(), locId);
+const isAdminAnywhere = () => isOwner() || (!!me()?.admin && leaderLocs(me()).length > 0);
+const canUseRoom = (l, r) => !!l && (isOwnerL(l) || (l.rooms || []).includes(r.id) || leaderLocs(l).includes(r.locationId));
+const roleOf = (l) => (isOwnerL(l) ? 'owner' : l.admin ? 'admin' : 'leader');
 const myRooms = () => {
   const l = me();
   if (!l) return [];
-  const list = l.admin ? state.rooms : state.rooms.filter((r) => (l.rooms || []).includes(r.id));
+  const list = state.rooms.filter((r) => canUseRoom(l, r));
   const locOrder = new Map(locations().map((x, i) => [x.id, i]));
   return [...list].sort((a, b) => (locOrder.get(a.locationId) ?? 99) - (locOrder.get(b.locationId) ?? 99) || byOrder(a, b));
 };
@@ -134,23 +149,34 @@ function setRoom(id) {
     }));
   }
 }
+/* ---------- current location (picked in Settings; everything else follows it) ---------- */
+// Locations this person can see: owner sees all; admins see the ones they run (even with no rooms yet);
+// everyone sees locations where they have at least one room.
+const myLocations = () => locations().filter((loc) => adminOf(loc.id) || myRooms().some((r) => r.locationId === loc.id));
+const curLoc = () => {
+  const mine = myLocations();
+  return mine.find((l) => l.id === state.locId) || locationOf(currentRoom()) || mine[0] || null;
+};
+const roomsHere = () => { const loc = curLoc(); return loc ? myRooms().filter((r) => r.locationId === loc.id) : []; };
+function setLoc(id) {
+  state.locId = id;
+  state.leaderEdit = null;
+  try { localStorage.setItem('hgui_loc', id); } catch { /* ignore */ }
+  chooseRoom();
+}
+// Keep the open room inside the current location (remembering the last room used).
 function chooseRoom() {
-  const mine = myRooms();
-  if (!mine.length) { if (state.roomId) setRoom(null); return; }
-  if (mine.some((r) => r.id === state.roomId)) return;
+  const here = roomsHere();
+  if (!here.length) { if (state.roomId) setRoom(null); return; }
+  if (here.some((r) => r.id === state.roomId)) return;
   let saved = null;
   try { saved = localStorage.getItem(ROOM_KEY); } catch { /* ignore */ }
-  setRoom(mine.find((r) => r.id === saved)?.id || mine[0].id);
+  setRoom(here.find((r) => r.id === saved)?.id || here[0].id);
 }
 
 function roomSelect(extraClass = '') {
-  const mine = myRooms();
-  const groups = [...locations(), { id: undefined, name: 'Other' }].map((loc) => {
-    const rs = mine.filter((r) => loc.id === undefined ? !locationOf(r) : r.locationId === loc.id);
-    return rs.length ? `<optgroup label="${esc(loc.name)}">${rs.map((r) =>
-      `<option value="${esc(r.id)}" ${r.id === state.roomId ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</optgroup>` : '';
-  }).join('');
-  return `<label class="room-pick ${extraClass}"><span>Room</span><select data-role="room" aria-label="Room">${groups}</select></label>`;
+  const opts = roomsHere().map((r) => `<option value="${esc(r.id)}" ${r.id === state.roomId ? 'selected' : ''}>${esc(r.name)}</option>`).join('');
+  return `<label class="room-pick ${extraClass}"><span>Room</span><select data-role="room" aria-label="Room">${opts}</select></label>`;
 }
 
 /* ---------- views ---------- */
@@ -160,34 +186,36 @@ function render() {
   const leader = me();
   if (state.access !== 'ok' || !leader || state.globalLoaded.size < GLOBAL_COLS.length) return renderMsg('Loading…');
   if (!state.rooms.length) {
-    return renderMsg(leader.admin ? 'Setting up rooms… one moment.'
-      : 'The app is being updated. An admin needs to open it once to finish. Check back soon.', true);
+    return renderMsg(isOwner() ? 'Setting up rooms… one moment.'
+      : 'The app is being updated. The owner needs to open it once to finish. Check back soon.', true);
   }
-  if (!state.roomId) return renderMsg("You don't have access to any rooms yet. Ask an admin to give you a room.", true);
-  if (state.roomLoaded.size < ROOM_COLS.length) return renderMsg('Loading…');
+  if (!myLocations().length) return renderMsg("You don't have access to any rooms yet. Ask an admin to give you a room.", true);
+  chooseRoom();
+  if (state.roomId && state.roomLoaded.size < ROOM_COLS.length) return renderMsg('Loading…');
 
+  const loc = curLoc();
   if (pendingImport) {
-    if (leader.admin) { state.importPreview = parseImport(pendingImport); state.tab = 'settings'; }
+    if (state.roomId && adminOf(loc?.id)) { state.importPreview = parseImport(pendingImport); state.tab = 'settings'; }
     else toast('Only admins can import.');
     pendingImport = null;
     history.replaceState(null, '', location.pathname + location.search);
   }
-  if (state.tab === 'settings' && !leader.admin) state.tab = 'attendance';
+  // No rooms here yet (an admin's new location): only Settings makes sense.
+  if (!state.roomId) state.tab = 'settings';
   const showWeek = state.tab !== 'settings' && !(state.tab === 'board' && state.board === 'all');
   const isThisWeek = state.week === weekStart(new Date());
   const room = currentRoom();
 
   const body = { points: viewPoints, attendance: viewAttendance, board: viewBoard, settings: viewSettings }[state.tab]();
-  const tabs = [['attendance', '✓', 'Attendance'], ['points', '★', 'Points'], ['board', '🏆', 'Board']];
-  if (leader.admin) tabs.push(['settings', '⚙', 'Settings']);
+  const tabs = [['attendance', '✓', 'Attendance'], ['points', '★', 'Points'], ['board', '🏆', 'Board'], ['settings', '⚙', 'Settings']];
 
   app.innerHTML = `
     <header class="top">
-      <div><h1>${esc(locationOf(room)?.name || APP_NAME)}</h1><small class="room-name">${esc(room.name)}</small></div>
+      <div><h1>${esc(loc?.name || APP_NAME)}</h1><small class="room-name">${esc(room?.name || 'No rooms yet')}</small></div>
       <button class="link" data-act="logout">${esc(leader.name)} · Log out</button>
     </header>
     ${store.mode === 'local' ? '<div class="demo">Demo mode: no login, and data is saved on this device only.</div>' : ''}
-    ${state.tab === 'attendance' && myRooms().length > 1 ? roomSelect() : ''}
+    ${state.tab === 'attendance' && roomsHere().length > 1 ? roomSelect() : ''}
     ${showWeek ? `
       <nav class="week">
         <button data-act="week" data-n="-1" aria-label="Previous week">◀</button>
@@ -242,7 +270,7 @@ function renderNoAccess() {
 
 function viewPoints() {
   const everyone = people();
-  if (!everyone.length) return emptyState('No kids in this room yet.', isAdmin() ? 'Add kids in Settings.' : 'Ask an admin to add kids.');
+  if (!everyone.length) return emptyState('No kids in this room yet.', adminOf(curLoc()?.id) ? 'Add kids in Settings.' : 'Ask an admin to add kids.');
   const t = totals(state.week);
   const here = new Set(state.attendance.filter((a) => a.weekId === state.week).map((a) => a.personId));
   const ppl = state.showAllKids ? everyone : everyone.filter((p) => here.has(p.id));
@@ -297,7 +325,7 @@ function viewPerson(person, ppl, t) {
 
 function viewAttendance() {
   const ppl = people();
-  if (!ppl.length) return emptyState('No kids in this room yet.', isAdmin() ? 'Add kids in Settings.' : 'Ask an admin to add kids.');
+  if (!ppl.length) return emptyState('No kids in this room yet.', adminOf(curLoc()?.id) ? 'Add kids in Settings.' : 'Ask an admin to add kids.');
   const here = new Set(state.attendance.filter((a) => a.weekId === state.week).map((a) => a.personId));
   const count = ppl.filter((p) => here.has(p.id)).length;
   return `
@@ -343,82 +371,189 @@ const fold = (key, title, count, inner) => `
     <div class="fold-body">${inner}</div>
   </section>`;
 
-function roomChecks(name, selected, attrs = () => '') {
-  return locations().map((loc) => {
-    const rs = roomsIn(loc.id);
-    if (!rs.length) return '';
-    return `<div class="room-checks"><small>${esc(loc.name)}</small>${rs.map((r) => `
-      <label class="check"><input type="checkbox" name="${name}" value="${esc(r.id)}" ${selected.includes(r.id) ? 'checked' : ''} ${attrs(r)}> ${esc(r.name)}</label>`).join('')}</div>`;
-  }).join('');
+// Access checkboxes for one location: "All of <location>" plus each of its rooms.
+// l is the leader being edited (null for the Add leader form).
+function accessChecks(loc, l, attrs = () => '') {
+  const whole = leaderLocs(l).includes(loc.id);
+  const picked = l?.rooms || [];
+  return `<div class="room-checks"><small>${esc(loc.name)}</small>
+    <label class="check"><input type="checkbox" name="locs" value="${esc(loc.id)}" ${whole ? 'checked' : ''} ${attrs('loc')}>
+      <span>All of ${esc(loc.name)}<small class="muted block">Every room here, including rooms added later</small></span></label>
+    ${roomsIn(loc.id).map((r) => `
+      <label class="check sub"><input type="checkbox" name="rooms" value="${esc(r.id)}" ${whole || picked.includes(r.id) ? 'checked' : ''} ${whole ? 'disabled' : ''} ${attrs('room')}> ${esc(r.name)}</label>`).join('')}
+  </div>`;
+}
+
+// What someone can do inside one location, in words.
+function accessIn(l, loc) {
+  if (isOwnerL(l)) return 'Owner · every location';
+  if (adminOfL(l, loc.id)) return `Admin of ${loc.name}`;
+  if (leaderLocs(l).includes(loc.id)) return `All of ${loc.name}`;
+  const rs = roomsIn(loc.id).filter((r) => (l.rooms || []).includes(r.id)).map((r) => r.name);
+  return rs.length ? rs.join(', ') : `No access to ${loc.name}`;
+}
+const hasAccessIn = (l, loc) => isOwnerL(l) || leaderLocs(l).includes(loc.id) || roomsIn(loc.id).some((r) => (l.rooms || []).includes(r.id));
+// Location admins can only fully manage (reset password, remove) leaders whose access is all inside their locations.
+const leaderInsideMine = (l) => {
+  const mine = leaderLocs(me());
+  const roomLocs = (l.rooms || []).map((id) => state.rooms.find((r) => r.id === id)?.locationId).filter(Boolean);
+  return [...leaderLocs(l), ...roomLocs].every((id) => mine.includes(id));
+};
+const canEditLeader = (l) => l.id !== state.user.email && !isOwnerL(l) && (isOwner() || !l.admin);
+const canFullyManage = (l) => canEditLeader(l) && (isOwner() || leaderInsideMine(l));
+
+/* ---------- activity log (admins, one location + one week at a time) ---------- */
+let logUnsub = null;
+function watchLog(loc) {
+  const key = `${loc.id}|${state.logWeek}`;
+  if (state.logKey === key) return;
+  logUnsub?.();
+  state.logKey = key;
+  state.log = null;
+  logUnsub = store.watchWhere2('log', [['locationId', loc.id], ['weekId', state.logWeek]], (docs) => {
+    if (state.logKey !== key) return;
+    state.log = docs.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    softRender();
+  });
+}
+function logHtml(loc) {
+  if (isOpen('log')) watchLog(loc);
+  const rooms = roomsIn(loc.id);
+  const rows = (state.log || []).filter((x) => !state.logRoom || x.roomId === state.logRoom);
+  const when = (ts) => new Date(ts).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return `
+    <p class="muted small">Everything entered in ${esc(loc.name)} for the week of points it counts toward.</p>
+    <nav class="week">
+      <button data-act="logWeek" data-n="-1" aria-label="Previous week">◀</button>
+      <div><strong>Week of ${weekLabel(state.logWeek)}</strong>
+        ${state.logWeek === weekStart(new Date()) ? '<small>This week</small>' : '<button class="link small" data-act="logThisWeek">Jump to this week</button>'}</div>
+      <button data-act="logWeek" data-n="1" aria-label="Next week">▶</button>
+    </nav>
+    ${rooms.length > 1 ? `<div class="log-filter"><select data-role="logRoom" aria-label="Room">
+      <option value="">All rooms</option>${rooms.map((r) => `<option value="${esc(r.id)}" ${r.id === state.logRoom ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}
+    </select></div>` : ''}
+    ${state.log === null ? '<p class="muted small center">Loading…</p>' : !rows.length ? '<p class="muted small center">Nothing entered this week.</p>' : `
+    <ul class="log-list">
+      ${rows.map((x) => `<li><span class="${x.kind === 'del' ? 'del' : x.kind === 'add' ? 'add' : ''}">${esc(x.detail)}</span>
+        <small>${esc(x.leaderName || 'Someone')}${x.roomName ? ` · ${esc(x.roomName)}` : ''} · ${esc(when(x.ts))}</small></li>`).join('')}
+    </ul>`}`;
+}
+
+/* ---------- settings: everyone gets this page; what's on it depends on who you are ---------- */
+function themeNow() { try { return localStorage.getItem('hgui_theme') || 'auto'; } catch { return 'auto'; } }
+
+function accountHtml() {
+  const l = me();
+  return `
+    <p class="small"><b>Name:</b> ${esc(l.name)} <span class="muted">· ${roleOf(l)}</span></p>
+    <form data-form="changeUsername" class="stack" autocomplete="off">
+      <label>Username
+        <input name="username" value="${esc(usernameOf(l))}" required autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off">
+      </label>
+      <button class="primary wide">Save username</button>
+    </form>
+    <button class="ghost wide" data-act="setPassword" data-id="${esc(l.id)}">Change my password</button>
+    <h3>Appearance</h3>
+    <div class="seg three">
+      ${[['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([v, label]) =>
+        `<button class="${themeNow() === v ? 'on' : ''}" data-act="theme" data-v="${v}">${label}</button>`).join('')}
+    </div>`;
 }
 
 function viewSettings() {
+  const loc = curLoc();
+  const admin = !!loc && adminOf(loc.id);
+  const locRooms = loc ? roomsIn(loc.id) : [];
   const room = currentRoom();
-  const locOpts = locations().map((l) => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('');
-  const roomOpts = state.rooms.slice().sort((a, b) => roomLabel(a).localeCompare(roomLabel(b))).map((r) => `<option value="${esc(r.id)}">${esc(roomLabel(r))}</option>`).join('');
+
+  const locPicker = myLocations().length > 1 ? `
+    <label class="room-pick wide-pick loc-pick"><span>Location</span>
+      <select data-role="loc" aria-label="Location">
+        ${myLocations().map((l) => `<option value="${esc(l.id)}" ${l.id === loc?.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}
+      </select>
+    </label>` : '';
+  const footer = `
+    ${fold('account', 'My account', '', accountHtml())}
+    <p class="muted small center">App version ${APP_VERSION}</p>`;
+
+  if (!admin) return `${locPicker}${footer}`;
 
   const roomsHtml = `
-    ${locations().map((loc) => `
-      <div class="loc-block">
-        <div class="row">
-          <input value="${esc(loc.name)}" data-col="locations" data-id="${esc(loc.id)}" data-field="name" aria-label="Location name" class="loc-name">
-          <button class="x" data-act="delLocation" data-id="${esc(loc.id)}" aria-label="Delete location">✕</button>
-        </div>
-        <ul class="edit rooms-list">
-          ${roomsIn(loc.id).map((r) => `<li>
-            <input value="${esc(r.name)}" data-col="rooms" data-id="${esc(r.id)}" data-field="name" aria-label="Room name">
-            <button class="x" data-act="delRoom" data-id="${esc(r.id)}" aria-label="Delete room">✕</button>
-          </li>`).join('') || '<li class="muted small">No rooms yet.</li>'}
-        </ul>
-      </div>`).join('')}
+    <div class="loc-block">
+      ${isOwner() ? `<div class="row">
+        <input value="${esc(loc.name)}" data-col="locations" data-id="${esc(loc.id)}" data-field="name" aria-label="Location name" class="loc-name">
+        <button class="x" data-act="delLocation" data-id="${esc(loc.id)}" aria-label="Delete location">✕</button>
+      </div>` : ''}
+      <ul class="edit rooms-list">
+        ${locRooms.map((r) => `<li>
+          <input value="${esc(r.name)}" data-col="rooms" data-id="${esc(r.id)}" data-field="name" aria-label="Room name">
+          <button class="x" data-act="delRoom" data-id="${esc(r.id)}" aria-label="Delete room">✕</button>
+        </li>`).join('') || '<li class="muted small">No rooms yet.</li>'}
+      </ul>
+    </div>
+    <h3>Add a room to ${esc(loc.name)}</h3>
+    <form data-form="addRoom" class="stack">
+      <input type="hidden" name="locationId" value="${esc(loc.id)}">
+      <input name="name" placeholder="Room name (e.g. Sparks)" required>
+      <select name="copyFrom"><option value="">Start with no point categories</option>${state.rooms.filter((r) => adminOf(r.locationId)).map((r) => `<option value="${esc(r.id)}">Copy categories from ${esc(roomLabel(r))}</option>`).join('')}</select>
+      <button class="primary wide">Add room</button>
+    </form>
+    ${isOwner() ? `
     <h3>Add a location</h3>
     <form data-form="addLocation" class="row">
       <input name="name" placeholder="e.g. Awana" required><button class="primary">Add</button>
-    </form>
-    ${state.locations.length ? `
-    <h3>Add a room</h3>
-    <form data-form="addRoom" class="stack">
-      <select name="locationId" required>${locOpts}</select>
-      <input name="name" placeholder="Room name (e.g. Sparks)" required>
-      <select name="copyFrom"><option value="">Start with no point categories</option>${state.rooms.map((r) => `<option value="${esc(r.id)}">Copy categories from ${esc(roomLabel(r))}</option>`).join('')}</select>
-      <button class="primary wide">Add room</button>
     </form>` : ''}`;
 
+  const leaders = [...state.leaders].sort(byName);
   const leadersHtml = `
-    <p class="muted small">Leaders can take attendance and give points in the rooms you check. Admins can do everything, in every room.</p>
+    <p class="muted small">Showing access to <b>${esc(loc.name)}</b>.${myLocations().length > 1 ? ' Switch locations at the top to set access there.' : ''}
+      ${isOwner() ? 'Admins run only the locations you give them.' : 'Only the owner can add or change admins.'}</p>
     <form data-form="addLeader" class="stack" autocomplete="off">
       <input name="name" placeholder="Name" required>
       <input name="username" placeholder="Username" required autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="off">
       <input name="password" placeholder="Password (6+ characters)" required minlength="6" autocomplete="new-password">
-      <select name="role"><option value="leader">Leader</option><option value="admin">Admin</option></select>
-      ${roomChecks('rooms', [])}
+      ${isOwner() ? '<select name="role"><option value="leader">Leader</option><option value="admin">Admin (runs the locations checked as "All of")</option></select>' : '<input type="hidden" name="role" value="leader">'}
+      ${accessChecks(loc, null)}
       <button class="primary wide">Add leader</button>
     </form>
     <ul class="leaders">
-      ${[...state.leaders].sort(byName).map((l) => {
+      ${leaders.map((l) => {
+        const editing = state.leaderEdit === l.id && canEditLeader(l);
         const self = l.id === state.user.email;
-        const rooms = l.admin ? 'All rooms' : (l.rooms || []).map((id) => state.rooms.find((r) => r.id === id)).filter(Boolean).map(roomLabel).join(', ') || 'No rooms';
-        const editing = state.leaderEdit === l.id;
-        return `<li>
+        return `<li class="${hasAccessIn(l, loc) ? '' : 'no-access'}">
           <div class="row">
-            <span class="grow"><b>${esc(l.name)}</b> <em class="badge">${l.admin ? 'admin' : 'leader'}</em>${self ? ' <small class="muted">you</small>' : ''}
-              <small class="email">Username: ${esc(usernameOf(l))}</small><small class="email">${esc(rooms)}</small></span>
-            <button class="ghost small" data-act="editLeader" data-id="${esc(l.id)}">${editing ? 'Done' : 'Edit'}</button>
+            <span class="grow"><b>${esc(l.name)}</b> <em class="badge">${roleOf(l)}</em>${self ? ' <small class="muted">you</small>' : ''}
+              <small class="email">Username: ${esc(usernameOf(l))}</small><small class="email">${esc(accessIn(l, loc))}</small></span>
+            ${canEditLeader(l) ? `<button class="ghost small" data-act="editLeader" data-id="${esc(l.id)}">${editing ? 'Done' : 'Edit'}</button>` : ''}
           </div>
           ${editing ? `<div class="leader-edit">
-            ${self ? `<button class="ghost wide" data-act="setPassword" data-id="${esc(l.id)}">Change my password</button>` : `
-              <label>Role<select data-leader="${esc(l.id)}" data-lf="role"><option value="leader" ${l.admin ? '' : 'selected'}>Leader</option><option value="admin" ${l.admin ? 'selected' : ''}>Admin</option></select></label>
-              ${l.admin ? '' : `<p class="small"><b>Rooms</b></p>${roomChecks('lroom', l.rooms || [], () => `data-leader="${esc(l.id)}" data-lf="room"`)}`}
+            ${isOwner() ? `<label>Role<select data-leader="${esc(l.id)}" data-lf="role"><option value="leader" ${l.admin ? '' : 'selected'}>Leader</option><option value="admin" ${l.admin ? 'selected' : ''}>Admin</option></select></label>` : ''}
+            ${l.admin
+              ? `<label class="check"><input type="checkbox" ${leaderLocs(l).includes(loc.id) ? 'checked' : ''} value="${esc(loc.id)}" data-leader="${esc(l.id)}" data-lf="loc"> Admin of ${esc(loc.name)}</label>`
+              : `<p class="small"><b>Access in ${esc(loc.name)}</b></p>${accessChecks(loc, l, (kind) => `data-leader="${esc(l.id)}" data-lf="${kind}"`)}`}
+            ${canFullyManage(l) ? `
               <button class="ghost wide" data-act="setPassword" data-id="${esc(l.id)}">Set a new password</button>
-              <button class="ghost wide danger" data-act="delLeader" data-id="${esc(l.id)}">Remove leader</button>`}
+              <button class="ghost wide danger" data-act="delLeader" data-id="${esc(l.id)}">Remove leader</button>`
+              : '<p class="muted small">This leader also works in another location, so only the owner can reset their password or remove them.</p>'}
           </div>` : ''}
         </li>`;
       }).join('')}
     </ul>`;
 
+  const head = `
+    ${locPicker}
+    ${fold('rooms', `${esc(loc.name)} rooms`, locRooms.length, roomsHtml)}
+    ${fold('leaders', 'Leaders', leaders.filter((l) => hasAccessIn(l, loc)).length, leadersHtml)}
+    ${fold('log', 'Activity log', '', logHtml(loc))}`;
+
+  if (!room) {
+    return `${head}
+      <p class="muted small center">No rooms in ${esc(loc.name)} yet. Add one above to set up kids and point categories.</p>
+      ${footer}`;
+  }
+
   return `
-    ${fold('rooms', 'Locations & rooms', state.rooms.length, roomsHtml)}
-    ${fold('leaders', 'Leaders', state.leaders.length, leadersHtml)}
+    ${head}
 
     <div class="room-settings-head">
       <p class="small muted">The settings below are for one room:</p>
@@ -470,20 +605,34 @@ function viewSettings() {
 
     ${fold('backup', 'Backup', '', `
       <button class="ghost wide" data-act="export">Download this room's points (CSV)</button>`)}
-    <p class="muted small center">App version ${APP_VERSION}</p>`;
+    ${footer}`;
 }
 
 const emptyState = (title, sub) => `<div class="center muted empty"><p><strong>${title}</strong></p><p>${sub}</p></div>`;
 
 /* ---------- actions ---------- */
+// Record who entered what, for the location's activity log.
+// weekId = the week the points/attendance count toward (setup changes use the current week).
+function logIt(detail, kind = '', weekId = state.week, room = currentRoom()) {
+  if (!room) return;
+  store.add('log', { locationId: room.locationId || '', roomId: room.id || '', roomName: room.name || '', weekId,
+    leaderEmail: state.user.email, leaderName: me()?.name || '', detail, kind, ts: Date.now() });
+}
+const nowWeek = () => weekStart(new Date());
+const signed = (n) => `${n >= 0 ? '+' : ''}${n}`;
+
 function addEntry(person, name, points, categoryId = null) {
   const id = store.add('entries', {
     roomId: state.roomId, weekId: state.week, personId: person.id, personName: person.name,
     categoryId, categoryName: name, points,
     leaderEmail: state.user.email, leaderName: me()?.name || '', ts: Date.now(),
   });
+  logIt(`${signed(points)} ${name} → ${person.name}`, 'add');
   navigator.vibrate?.(15);
-  toast(`${points >= 0 ? '+' : ''}${points} ${esc(name)} → ${esc(person.name)}`, () => store.remove('entries', id));
+  toast(`${signed(points)} ${esc(name)} → ${esc(person.name)}`, () => {
+    store.remove('entries', id);
+    logIt(`Undid ${signed(points)} ${name} → ${person.name}`, 'del');
+  });
 }
 
 async function setLeaderPassword(l, pw) {
@@ -542,22 +691,30 @@ const actions = {
   },
   delEntry: (d) => {
     const e = state.entries.find((x) => x.id === d.id);
-    if (e && confirm(`Remove ${e.points} pts for "${e.categoryName}"?`)) store.remove('entries', d.id);
+    if (!e || !confirm(`Remove ${e.points} pts for "${e.categoryName}"?`)) return;
+    store.remove('entries', d.id);
+    const who = state.people.find((p) => p.id === e.personId)?.name || e.personName || '';
+    logIt(`Removed ${signed(Number(e.points) || 0)} ${e.categoryName} from ${who}`, 'del', e.weekId);
   },
   undo: () => {},
   toggleAtt: (d) => {
     const id = `${state.week}_${d.id}`;
     const person = state.people.find((p) => p.id === d.id);
-    if (state.attendance.some((a) => a.id === id)) store.remove('attendance', id);
-    else {
+    if (state.attendance.some((a) => a.id === id)) {
+      store.remove('attendance', id);
+      logIt(`Unmarked ${person?.name || ''} as here`, 'del');
+    } else {
       store.set('attendance', id, { roomId: state.roomId, weekId: state.week, personId: d.id, personName: person?.name || '',
         points: attendancePoints(), leaderName: me()?.name || '', ts: Date.now() });
+      logIt(`Marked ${person?.name || ''} here (${signed(attendancePoints())})`, 'add');
       navigator.vibrate?.(15);
     }
   },
   del: (d) => {
     const extra = d.col === 'people' ? ' Their points will no longer appear on the board.' : '';
-    if (confirm(`Delete "${d.name}"?${extra}`)) store.remove(d.col, d.id);
+    if (!confirm(`Delete "${d.name}"?${extra}`)) return;
+    store.remove(d.col, d.id);
+    logIt(`Deleted ${d.col === 'people' ? 'kid' : 'category'} "${d.name}"`, 'del', nowWeek());
   },
   move: (d) => {
     const cats = categories();
@@ -577,11 +734,17 @@ const actions = {
     try { localStorage.setItem(UI_KEY, JSON.stringify([...openSections])); } catch { /* ignore */ }
   },
   setAllKids: (d) => { state.showAllKids = d.v === '1'; },
+  theme: (d) => {
+    try { if (d.v === 'auto') localStorage.removeItem('hgui_theme'); else localStorage.setItem('hgui_theme', d.v); } catch { /* ignore */ }
+    if (d.v === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = d.v;
+  },
+  logWeek: (d) => { state.logWeek = shiftWeek(state.logWeek, Number(d.n)); },
+  logThisWeek: () => { state.logWeek = weekStart(new Date()); },
 
   // rooms & locations
   delLocation: (d) => {
     const loc = state.locations.find((l) => l.id === d.id);
-    if (!loc) return;
+    if (!loc || !isOwner()) return;
     if (roomsIn(loc.id).length) return alert(`Remove the rooms in ${loc.name} first.`);
     if (confirm(`Delete location "${loc.name}"?`)) store.remove('locations', loc.id);
   },
@@ -589,7 +752,9 @@ const actions = {
     const r = state.rooms.find((x) => x.id === d.id);
     if (!r) return;
     if (state.rooms.length === 1) return alert("You can't delete the last room.");
+    if (!adminOf(r.locationId)) return;
     if (!confirm(`Delete room "${roomLabel(r)}"? Its kids and points will be hidden for good.`)) return;
+    logIt(`Deleted room "${r.name}"`, 'del', nowWeek(), r);
     store.remove('rooms', r.id);
   },
 
@@ -629,6 +794,7 @@ const actions = {
     if (!from || !to) return;
     if (!confirm(`Move all of ${from.name}'s points and attendance to ${to.name}, then remove ${from.name}?`)) return;
     mergeKids(from.id, to.id);
+    logIt(`Merged kid "${from.name}" into "${to.name}"`, '', nowWeek());
     state.mergeFrom = null;
     toast(`Merged ${esc(from.name)} into ${esc(to.name)}`);
   },
@@ -677,6 +843,7 @@ const actions = {
       }
     }
     toast(`Imported ${p.categories.length} categories, ${p.kids.length} kids, ${marks} attendance marks`);
+    logIt(`Imported ${p.categories.length} categories, ${p.kids.length} kids, ${marks} attendance marks`, 'add', nowWeek());
     state.importPreview = null;
   },
   export: () => {
@@ -828,19 +995,54 @@ const forms = {
       state.authMsg = 'Someone already set up this app. Ask them to add you.';
     }
   },
-  addPerson: (f) => { store.add('people', { roomId: state.roomId, name: f.get('name').trim() }); },
+  addPerson: (f) => {
+    const name = f.get('name').trim();
+    store.add('people', { roomId: state.roomId, name });
+    logIt(`Added kid "${name}"`, 'add', nowWeek());
+  },
   addCategory: (f) => {
     const max = Math.max(-1, ...state.categories.map((c) => c.order ?? 0));
-    store.add('categories', { roomId: state.roomId, name: f.get('name').trim(), points: Number(f.get('points')) || 0, order: max + 1 });
+    const name = f.get('name').trim();
+    const points = Number(f.get('points')) || 0;
+    store.add('categories', { roomId: state.roomId, name, points, order: max + 1 });
+    logIt(`Added category "${name}" (${signed(points)})`, 'add', nowWeek());
+  },
+  changeUsername: async (f) => {
+    const l = me();
+    const username = normUser(f.get('username'));
+    if (!l || username === usernameOf(l)) return false;
+    if (!/^[a-z0-9][a-z0-9._@+-]{1,59}$/.test(username)) {
+      alert('Usernames can use letters, numbers, dots, dashes, and underscores (no spaces).');
+      return false;
+    }
+    const taken = state.leaders.some((x) => usernameOf(x) === username) || await store.getDoc('usernames', username).catch(() => null);
+    if (taken) { alert(`The username "${username}" is already taken.`); return false; }
+    try {
+      await store.batch([
+        { op: 'set', col: 'usernames', id: username, data: { authEmail: l.id } },
+        { op: 'update', col: 'leaders', id: l.id, data: { username } },
+        { op: 'delete', col: 'usernames', id: usernameOf(l) },
+      ]);
+      toast(`Username changed to <b>${esc(username)}</b>. Use it next time you sign in.`);
+    } catch (e) {
+      console.error(e);
+      alert('Could not change your username. Please try again.');
+      return false;
+    }
   },
   addLocation: (f) => {
     const max = Math.max(-1, ...state.locations.map((l) => l.order ?? 0));
-    store.add('locations', { name: f.get('name').trim(), order: max + 1 });
+    if (!isOwner()) return false;
+    const id = store.add('locations', { name: f.get('name').trim(), order: max + 1 });
+    setLoc(id); // jump to the new location so its rooms can be added next
   },
   addRoom: async (f) => {
     const locationId = f.get('locationId');
     const max = Math.max(-1, ...roomsIn(locationId).map((r) => r.order ?? 0));
-    const roomId = store.add('rooms', { name: f.get('name').trim(), locationId, attendancePoints: 10, order: max + 1 });
+    if (!adminOf(locationId)) return false;
+    const name = f.get('name').trim();
+    const roomId = store.add('rooms', { name, locationId, attendancePoints: 10, order: max + 1 });
+    logIt(`Added room "${name}"`, 'add', nowWeek(), { id: roomId, name, locationId });
     const copyFrom = f.get('copyFrom');
     if (copyFrom) {
       const src = (await store.getAll('categories')).filter((c) => c.roomId === copyFrom);
@@ -855,8 +1057,9 @@ const forms = {
     const name = f.get('name').trim();
     const username = normUser(f.get('username'));
     const pw = f.get('password');
-    const admin = f.get('role') === 'admin';
+    const admin = isOwner() && f.get('role') === 'admin';
     const rooms = admin ? [] : f.getAll('rooms');
+    const locs = admin ? [] : f.getAll('locs');
     if (!/^[a-z0-9][a-z0-9._@+-]{1,59}$/.test(username)) {
       alert('Usernames can use letters, numbers, dots, dashes, and underscores (no spaces).');
       return false;
@@ -869,7 +1072,7 @@ const forms = {
       await store.createLogin(authEmail, pw);
       await store.batch([
         { op: 'set', col: 'usernames', id: username, data: { authEmail } },
-        { op: 'set', col: 'leaders', id: authEmail, data: { name, username, admin, rooms } },
+        { op: 'set', col: 'leaders', id: authEmail, data: { name, username, admin, rooms, locations: locs } },
       ]);
       toast(`Added ${esc(name)}. Username: <b>${esc(username)}</b>`);
     } catch (e) {
@@ -899,22 +1102,39 @@ app.addEventListener('submit', async (e) => {
 app.addEventListener('change', (e) => {
   const el = e.target;
   if (el.dataset.role === 'room') { setRoom(el.value); render(); return; }
+  if (el.dataset.role === 'loc') { setLoc(el.value); render(); return; }
+  if (el.dataset.role === 'logRoom') { state.logRoom = el.value; render(); return; }
   if (el.dataset.leader) {
     const l = state.leaders.find((x) => x.id === el.dataset.leader);
     if (!l) return;
-    if (el.dataset.lf === 'role') store.update('leaders', l.id, { admin: el.value === 'admin', rooms: l.rooms || [] });
-    if (el.dataset.lf === 'room') {
-      const set = new Set(l.rooms || []);
-      if (el.checked) set.add(el.value); else set.delete(el.value);
-      store.update('leaders', l.id, { rooms: [...set] });
-    }
+    const toggle = (list) => { const set = new Set(list || []); if (el.checked) set.add(el.value); else set.delete(el.value); return [...set]; };
+    if (el.dataset.lf === 'role' && isOwner()) store.update('leaders', l.id, { admin: el.value === 'admin', rooms: l.rooms || [], locations: leaderLocs(l) });
+    if (el.dataset.lf === 'room') store.update('leaders', l.id, { rooms: toggle(l.rooms) });
+    if (el.dataset.lf === 'loc') store.update('leaders', l.id, { locations: toggle(l.locations) });
+    return;
+  }
+  // Add leader form: "All of <location>" covers its rooms, so grey them out.
+  if (el.name === 'locs' && el.form) {
+    el.closest('.room-checks')?.querySelectorAll('input[name="rooms"]').forEach((box) => {
+      box.disabled = el.checked;
+      if (el.checked) box.checked = true;
+    });
     return;
   }
   if (!el.dataset.col) return;
   let v = el.value;
   if (el.type === 'number') v = Number(v) || 0;
   else { v = v.trim(); if (!v) return render(); }
-  store.update(el.dataset.col, el.dataset.id, { [el.dataset.field]: v });
+  const col = el.dataset.col, field = el.dataset.field;
+  const before = (state[col] || []).find((x) => x.id === el.dataset.id);
+  store.update(col, el.dataset.id, { [field]: v });
+  // Log setup changes so admins can see who changed what.
+  if (!before || before[field] === v) return;
+  const what = { people: 'kid', categories: 'category', rooms: 'room' }[col];
+  if (!what) return;
+  if (field === 'name') logIt(`Renamed ${what} "${before.name}" → "${v}"`, '', nowWeek(), col === 'rooms' ? before : currentRoom());
+  else if (col === 'categories') logIt(`Changed "${before.name}" from ${signed(Number(before.points) || 0)} to ${signed(v)}`, '', nowWeek());
+  else if (field === 'attendancePoints') logIt(`Changed attendance points from ${before.attendancePoints ?? 10} to ${v}`, '', nowWeek(), before);
 });
 
 let pendingRender = false;
@@ -979,7 +1199,7 @@ async function migrateToRooms() {
 let watching = false;
 function afterGlobalChange() {
   if (state.globalLoaded.size < GLOBAL_COLS.length || !me()) return;
-  if (!state.rooms.length) { if (isAdmin()) migrateToRooms(); return; }
+  if (!state.rooms.length) { if (isOwner()) migrateToRooms(); return; }
   chooseRoom();
 }
 function startWatching() {
@@ -1003,6 +1223,9 @@ function onUser(user) {
   render();
   store.watchDoc('leaders', user.email, async (doc) => {
     if (doc) {
+      if (!state.ownerEmail) {
+        try { state.ownerEmail = (await store.getDoc('meta', 'setup'))?.owner?.toLowerCase() || null; } catch { /* ignore */ }
+      }
       state.access = 'ok';
       startWatching();
       afterGlobalChange();

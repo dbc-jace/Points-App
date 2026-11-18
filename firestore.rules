@@ -1,4 +1,8 @@
 rules_version = '2';
+// Roles:
+//   Owner  = the account in meta/setup.owner. Everything, everywhere. Only one who manages locations and admins.
+//   Admin  = leaders/{email}.admin == true; `locations` lists the locations they run. Full control there only.
+//   Leader = `rooms` (single rooms) and/or `locations` (every room in that location). Attendance + points.
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() {
@@ -13,67 +17,140 @@ service cloud.firestore {
     function setupPath() {
       return /databases/$(database)/documents/meta/setup;
     }
+    function roomPath(room) {
+      return /databases/$(database)/documents/rooms/$(room);
+    }
     function isLeader() {
       return signedIn() && exists(leaderPath(myEmail()));
     }
     function meDoc() {
       return get(leaderPath(myEmail())).data;
     }
-    function isAdmin() {
+    function myLocs() {
+      return meDoc().get('locations', []);
+    }
+    function isOwner() {
+      return signedIn() && exists(setupPath()) && get(setupPath()).data.owner == myEmail();
+    }
+    function isAdminFlag() {
       return isLeader() && meDoc().get('admin', false) == true;
     }
+    function adminOf(loc) {
+      return isOwner() || (isAdminFlag() && loc in myLocs());
+    }
+    function roomLoc(room) {
+      return room is string && room != '' && exists(roomPath(room)) ? get(roomPath(room)).data.get('locationId', '') : '';
+    }
+    // Use a room: owner, or the room is checked, or its whole location is given.
     function canRoom(room) {
-      return isAdmin() || (isLeader() && room in meDoc().get('rooms', []));
+      return isOwner() || (isLeader() && (room in meDoc().get('rooms', []) || roomLoc(room) in myLocs()));
+    }
+    // Set up a room (kids, categories): owner, or admin of the room's location.
+    function canAdminRoom(room) {
+      return isOwner() || (isAdminFlag() && roomLoc(room) in myLocs());
     }
     function roomOf(data) {
       return data.get('roomId', '');
     }
+    // A leader record a location admin may manage: not an admin, and every whole location is one they run.
+    function manageable(d) {
+      return d.get('admin', false) == false && d.get('locations', []).toSet().hasOnly(myLocs());
+    }
+    // A location admin's edit to a leader: never makes an admin, and only adds/removes their own locations.
+    function adminEditOk(before, after) {
+      return before.get('admin', false) == false && after.get('admin', false) == false
+        && after.get('locations', []).toSet().difference(before.get('locations', []).toSet())
+             .union(before.get('locations', []).toSet().difference(after.get('locations', []).toSet()))
+             .hasOnly(myLocs());
+    }
+
     match /meta/setup {
       allow read: if signedIn();
       allow create: if signedIn() && !exists(setupPath()) && request.resource.data.owner == myEmail() && existsAfter(leaderPath(myEmail()));
     }
+
     match /usernames/{username} {
       allow get: if true;
-      allow list: if isAdmin();
-      allow write: if isAdmin();
+      allow list: if isOwner();
+      // Anyone may point a new username at their own login (changing their username).
+      allow create: if isOwner() || request.resource.data.authEmail == myEmail()
+        || (isAdminFlag() && manageable(getAfter(leaderPath(request.resource.data.authEmail)).data));
+      allow update: if isOwner()
+        || (resource.data.authEmail == myEmail() && request.resource.data.authEmail == myEmail())
+        || (isAdminFlag() && exists(leaderPath(resource.data.authEmail)) && manageable(get(leaderPath(resource.data.authEmail)).data)
+            && manageable(getAfter(leaderPath(request.resource.data.authEmail)).data));
+      allow delete: if isOwner() || resource.data.authEmail == myEmail()
+        || (isAdminFlag() && (!exists(leaderPath(resource.data.authEmail)) || manageable(get(leaderPath(resource.data.authEmail)).data)));
     }
+
     match /leaders/{email} {
       allow read: if (signedIn() && email == myEmail()) || isLeader();
+      // First-time setup: the person claiming the app becomes its admin/owner.
       allow create: if signedIn() && email == myEmail() && !exists(setupPath()) && getAfter(setupPath()).data.owner == myEmail() && request.resource.data.admin == true;
-      allow create, update, delete: if isAdmin() && email != myEmail();
-      allow update: if isAdmin() && email == myEmail() && request.resource.data.admin == true;
+      // Owner: anyone but themself can be added/changed/removed; their own record stays admin.
+      allow create, delete: if isOwner() && email != myEmail();
+      allow update: if isOwner() && (email != myEmail() || request.resource.data.admin == true);
+      // Location admins: only non-admin leaders, only their own locations. Never their own record.
+      allow create: if isAdminFlag() && email != myEmail() && manageable(request.resource.data);
+      allow update: if isAdminFlag() && email != myEmail() && adminEditOk(resource.data, request.resource.data);
+      allow delete: if isAdminFlag() && email != myEmail() && manageable(resource.data);
+      // Everyone: may change their own username, nothing else.
+      allow update: if signedIn() && email == myEmail()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['username']);
     }
+
     match /locations/{id} {
       allow read: if isLeader();
-      allow write: if isAdmin();
+      allow write: if isOwner();
     }
+
     match /rooms/{id} {
       allow read: if isLeader();
-      allow write: if isAdmin();
+      allow create: if adminOf(request.resource.data.get('locationId', ''));
+      allow update: if adminOf(resource.data.get('locationId', '')) && adminOf(request.resource.data.get('locationId', ''));
+      allow delete: if adminOf(resource.data.get('locationId', ''));
     }
+
     match /people/{id} {
       allow read: if canRoom(roomOf(resource.data));
-      allow write: if isAdmin();
+      allow create: if canAdminRoom(roomOf(request.resource.data));
+      allow update: if canAdminRoom(roomOf(resource.data)) && canAdminRoom(roomOf(request.resource.data));
+      allow delete: if canAdminRoom(roomOf(resource.data));
     }
+
     match /categories/{id} {
       allow read: if canRoom(roomOf(resource.data));
-      allow write: if isAdmin();
+      allow create: if canAdminRoom(roomOf(request.resource.data));
+      allow update: if canAdminRoom(roomOf(resource.data)) && canAdminRoom(roomOf(request.resource.data));
+      allow delete: if canAdminRoom(roomOf(resource.data));
     }
+
     match /entries/{id} {
       allow read: if canRoom(roomOf(resource.data));
       allow create: if canRoom(roomOf(request.resource.data));
       allow update: if canRoom(roomOf(resource.data)) && canRoom(roomOf(request.resource.data));
       allow delete: if canRoom(roomOf(resource.data));
     }
+
     match /attendance/{id} {
       allow read: if canRoom(roomOf(resource.data));
       allow create: if canRoom(roomOf(request.resource.data));
       allow update: if canRoom(roomOf(resource.data)) && canRoom(roomOf(request.resource.data));
       allow delete: if canRoom(roomOf(resource.data));
     }
+
+    // Activity log: anyone signed in writes their own lines; only the location's admins (and the owner) read them.
+    // Lines can't be edited or deleted.
+    match /log/{id} {
+      allow read: if isOwner() || (isAdminFlag() && resource.data.locationId in myLocs());
+      allow create: if isLeader() && request.resource.data.leaderEmail == myEmail()
+        && (adminOf(request.resource.data.locationId)
+            || (canRoom(request.resource.data.roomId) && roomLoc(request.resource.data.roomId) == request.resource.data.locationId));
+    }
+
     match /settings/{id} {
       allow read: if isLeader();
-      allow write: if isAdmin();
+      allow write: if isOwner();
     }
   }
 }

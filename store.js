@@ -56,6 +56,11 @@ async function firebaseStore(onError) {
       return fs.onSnapshot(fs.query(fs.collection(db, name), fs.where(field, '==', value)),
         (snap) => cb(snapList(snap)), fail);
     },
+    // filters: [[field, value], ...] (all must match)
+    watchWhere2(name, filters, cb) {
+      return fs.onSnapshot(fs.query(fs.collection(db, name), ...filters.map(([f, v]) => fs.where(f, '==', v))),
+        (snap) => cb(snapList(snap)), fail);
+    },
     watchDoc(name, id, cb, onErr) {
       return fs.onSnapshot(fs.doc(db, name, id),
         (s) => cb(s.exists() ? { id: s.id, ...s.data() } : null), onErr || fail);
@@ -120,6 +125,7 @@ function localStore() {
     createLogin() { return Promise.resolve(); },
     watch,
     watchWhere(n, field, value, cb) { return watch(n, (docs) => cb(docs.filter((d) => d[field] === value))); },
+    watchWhere2(n, filters, cb) { return watch(n, (docs) => cb(docs.filter((d) => filters.every(([f, v]) => d[f] === v)))); },
     watchDoc(n, id, cb) { return watch(n, (docs) => cb(docs.find((d) => d.id === id) || null)); },
     async getDoc(n, id) { const v = read(n)[id]; return v ? { id, ...v } : null; },
     async getAll(n) { return list(n); },
