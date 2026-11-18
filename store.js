@@ -70,6 +70,7 @@ async function firebaseStore(onError) {
       return s.exists() ? { id: s.id, ...s.data() } : null;
     },
     async getAll(name) { return snapList(await fs.getDocs(fs.collection(db, name))); },
+    async getWhere(name, field, value) { return snapList(await fs.getDocs(fs.query(fs.collection(db, name), fs.where(field, '==', value)))); },
     // ops: [{ op: 'set' | 'update' | 'delete', col, id, data }]
     async batch(ops) {
       for (let i = 0; i < ops.length; i += 400) {
@@ -129,6 +130,7 @@ function localStore() {
     watchDoc(n, id, cb) { return watch(n, (docs) => cb(docs.find((d) => d.id === id) || null)); },
     async getDoc(n, id) { const v = read(n)[id]; return v ? { id, ...v } : null; },
     async getAll(n) { return list(n); },
+    async getWhere(n, field, value) { return list(n).filter((d) => d[field] === value); },
     async batch(ops) {
       for (const o of ops) {
         if (o.op === 'delete') remove(o.col, o.id);

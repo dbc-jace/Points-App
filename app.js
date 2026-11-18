@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.18-5';
+import { createStore, newId } from './store.js?v=2026.11.18-6';
 
-const APP_VERSION = '2026.11.18-5';
+const APP_VERSION = '2026.11.18-6';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -627,7 +627,10 @@ function viewSettings() {
       </form>`}`)}
 
     ${fold('backup', 'Backup', '', `
-      <button class="ghost wide" data-act="export">Download this room's points (CSV)</button>`)}
+      <button class="ghost wide" data-act="export">Download this room's points (CSV)</button>
+      <button class="ghost wide" data-act="exportAll">${isOwner() ? 'Download everything: all locations &amp; rooms (CSV)'
+        : `Download everything in ${esc(locations().filter((x) => adminOf(x.id)).map((x) => x.name).join(' & '))} (CSV)`}</button>
+      <p class="muted small">One file with every kid, point category, point, and attendance mark${isOwner() ? '' : ' in the locations you run'}. Opens in Excel or Google Sheets.</p>`)}
     ${footer}`;
 }
 
@@ -868,6 +871,43 @@ const actions = {
     toast(`Imported ${p.categories.length} categories, ${p.kids.length} kids, ${marks} attendance marks`);
     logIt(`Imported ${p.categories.length} categories, ${p.kids.length} kids, ${marks} attendance marks`, 'add', nowWeek());
     state.importPreview = null;
+  },
+  // One CSV for every location and room this person runs (the owner gets everything).
+  exportAll: async () => {
+    toast('Building the file…');
+    const head = ['Location', 'Room', 'Record', 'Week starting', 'Kid', 'Category', 'Points', 'Times attended', 'Entered by', 'Time'];
+    const rows = [];
+    const locName = (id) => state.locations.find((l) => l.id === id)?.name || '';
+    const rooms = [...state.rooms].filter((r) => adminOf(r.locationId))
+      .sort((a, b) => locName(a.locationId).localeCompare(locName(b.locationId)) || byOrder(a, b));
+    try {
+      for (const r of rooms) {
+        const [ppl, cats, ents, atts] = await Promise.all(ROOM_COLS.map((c) => store.getWhere(c, 'roomId', r.id)));
+        const L = locName(r.locationId);
+        const kid = (id, fallback) => ppl.find((p) => p.id === id)?.name || fallback || '';
+        const total = new Map(ppl.map((p) => [p.id, { pts: 0, att: 0 }]));
+        for (const e of ents) if (total.has(e.personId)) total.get(e.personId).pts += Number(e.points) || 0;
+        for (const a of atts) if (total.has(a.personId)) { const t = total.get(a.personId); t.pts += Number(a.points) || 0; t.att++; }
+        for (const p of [...ppl].sort(byName)) rows.push([L, r.name, 'Kid (all-time total)', '', p.name, '', total.get(p.id).pts, total.get(p.id).att, '', '']);
+        for (const c of [...cats].sort(byOrder)) rows.push([L, r.name, 'Point category', '', '', c.name, Number(c.points) || 0, '', '', '']);
+        rows.push([L, r.name, 'Attendance points', '', '', '', Number(r.attendancePoints ?? 10), '', '', '']);
+        const dated = [
+          ...ents.map((e) => [L, r.name, e.weekId === CARRYOVER ? 'Starting total' : 'Points', e.weekId === CARRYOVER ? '' : e.weekId,
+            kid(e.personId, e.personName), e.categoryName || '', Number(e.points) || 0, '', e.leaderName || '', e.ts ? new Date(e.ts).toLocaleString() : '']),
+          ...atts.map((a) => [L, r.name, 'Attendance', a.weekId, kid(a.personId, a.personName), '', Number(a.points) || 0, '', a.leaderName || '', a.ts ? new Date(a.ts).toLocaleString() : '']),
+        ].sort((x, y) => String(x[3]).localeCompare(String(y[3])) || String(x[4]).localeCompare(String(y[4])));
+        rows.push(...dated);
+      }
+    } catch (e) {
+      console.error(e);
+      return alert('Could not build the file. Check your connection and try again.');
+    }
+    const csv = [head, ...rows].map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }));
+    a.download = `${isOwner() ? 'all-locations' : 'my-locations'}-${ymd(new Date())}.csv`;
+    a.click();
+    toast(`Downloaded ${rooms.length} room${rooms.length === 1 ? '' : 's'}.`);
   },
   export: () => {
     const rows = [['Week starting', 'Person', 'Category', 'Points', 'Entered by', 'Time']];
