@@ -3,10 +3,14 @@
   --accent: #4f46e5; --accent-soft: #eef0ff; --good: #16a34a; --good-soft: #e8f8ee; --danger: #dc2626;
   --radius: 14px;
 }
+/* Dark colors: follow the phone unless the person picked Light or Dark in Settings. */
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #111117; --card: #1c1c24; --text: #f2f2f5; --muted: #9a9aa8; --line: #2e2e3a;
-    --accent: #818cf8; --accent-soft: #262a4a; --good: #4ade80; --good-soft: #17301f; }
+  :root:not([data-theme="light"]) { --bg: #111117; --card: #1c1c24; --text: #f2f2f5; --muted: #9a9aa8; --line: #2e2e3a;
+    --accent: #818cf8; --accent-soft: #262a4a; --good: #4ade80; --good-soft: #17301f; color-scheme: dark; }
 }
+:root[data-theme="dark"] { --bg: #111117; --card: #1c1c24; --text: #f2f2f5; --muted: #9a9aa8; --line: #2e2e3a;
+  --accent: #818cf8; --accent-soft: #262a4a; --good: #4ade80; --good-soft: #17301f; color-scheme: dark; }
+:root[data-theme="light"] { color-scheme: light; }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text);
   font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color: transparent; }
@@ -166,3 +170,16 @@ select { width: 100%; padding: 12px; border: 1px solid var(--line); border-radiu
 .leaders > li { padding: 10px 0; border-top: 1px solid var(--line); }
 .leader-edit { display: grid; gap: 8px; margin-top: 10px; padding: 10px; background: var(--bg); border-radius: 10px; }
 .danger { color: var(--danger); }
+.check .block { display: block; font-weight: 400; font-size: .78rem; }
+.check.sub { padding-left: 30px; }
+.check input:disabled + * , .check input:disabled { opacity: .55; }
+.loc-pick { margin-top: 2px; }
+.leaders li.no-access { opacity: .6; }
+
+.log-list { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 6px; }
+.log-list li { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: .88rem; }
+.log-list li small { display: block; color: var(--muted); }
+.log-list .add { color: var(--good); } .log-list .del { color: var(--danger); }
+.log-filter { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.log-filter select { flex: 1; }
+.seg.three { grid-template-columns: 1fr 1fr 1fr; }
