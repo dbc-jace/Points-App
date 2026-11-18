@@ -1,4 +1,4 @@
-# Points & Attendance
+# Points
 
 A phone-friendly web app for tracking points and attendance by week, shared live between leaders.
 

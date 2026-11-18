@@ -1,7 +1,7 @@
-import { createStore, newId } from './store.js?v=2026.11.18-1';
+import { createStore, newId } from './store.js?v=2026.11.18-2';
 
-const APP_VERSION = '2026.11.18-1';
-const APP_NAME = 'Points & Attendance';
+const APP_VERSION = '2026.11.18-2';
+const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
 const ROOM_COLS = ['people', 'categories', 'entries', 'attendance'];
