@@ -15,41 +15,46 @@ export async function createStore(onError) {
 }
 
 async function firebaseStore(onError) {
-  const [{ initializeApp }, fs, au] = await Promise.all([
+  const [appMod, fs, au] = await Promise.all([
     import(FB + 'firebase-app.js'),
     import(FB + 'firebase-firestore.js'),
     import(FB + 'firebase-auth.js'),
   ]);
-  const app = initializeApp(firebaseConfig);
+  const app = appMod.initializeApp(firebaseConfig);
   const db = fs.getFirestore(app);
   const auth = au.getAuth(app);
   const fail = (e) => { console.error(e); onError?.(e); };
-  const toUser = (u) => u && { email: (u.email || '').toLowerCase(), verified: u.emailVerified, name: u.displayName || '' };
+  const toUser = (u) => u && { email: (u.email || '').toLowerCase(), name: u.displayName || '' };
+  const snapList = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
   return {
     mode: 'shared',
 
     // ---- sign-in ----
     onAuth(cb) { au.onAuthStateChanged(auth, (u) => cb(toUser(u))); },
-    signInGoogle() { return au.signInWithPopup(auth, new au.GoogleAuthProvider()); },
     signIn(email, pw) { return au.signInWithEmailAndPassword(auth, email, pw); },
-    async signUp(email, pw) {
-      const cred = await au.createUserWithEmailAndPassword(auth, email, pw);
-      await au.sendEmailVerification(cred.user);
-    },
-    resendVerification() { return au.sendEmailVerification(auth.currentUser); },
-    async reloadUser() {
-      await auth.currentUser.reload();
-      await auth.currentUser.getIdToken(true); // refresh so the database sees "verified"
-      return toUser(auth.currentUser);
-    },
-    resetPassword(email) { return au.sendPasswordResetEmail(auth, email); },
+    signInGoogle() { return au.signInWithPopup(auth, new au.GoogleAuthProvider()); },
     signOut() { return au.signOut(auth); },
+    changeMyPassword(pw) { return au.updatePassword(auth.currentUser, pw); },
+    // Create a login for someone else without signing the admin out (uses a throwaway app instance).
+    async createLogin(email, pw) {
+      const tmp = appMod.initializeApp(firebaseConfig, 'create-' + newId());
+      try {
+        const tmpAuth = au.initializeAuth(tmp, { persistence: au.inMemoryPersistence });
+        await au.createUserWithEmailAndPassword(tmpAuth, email, pw);
+        await au.signOut(tmpAuth);
+      } finally {
+        await appMod.deleteApp(tmp);
+      }
+    },
 
     // ---- data ----
     watch(name, cb) {
-      return fs.onSnapshot(fs.collection(db, name),
-        (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() }))), fail);
+      return fs.onSnapshot(fs.collection(db, name), (snap) => cb(snapList(snap)), fail);
+    },
+    watchWhere(name, field, value, cb) {
+      return fs.onSnapshot(fs.query(fs.collection(db, name), fs.where(field, '==', value)),
+        (snap) => cb(snapList(snap)), fail);
     },
     watchDoc(name, id, cb, onErr) {
       return fs.onSnapshot(fs.doc(db, name, id),
@@ -58,6 +63,20 @@ async function firebaseStore(onError) {
     async getDoc(name, id) {
       const s = await fs.getDoc(fs.doc(db, name, id));
       return s.exists() ? { id: s.id, ...s.data() } : null;
+    },
+    async getAll(name) { return snapList(await fs.getDocs(fs.collection(db, name))); },
+    // ops: [{ op: 'set' | 'update' | 'delete', col, id, data }]
+    async batch(ops) {
+      for (let i = 0; i < ops.length; i += 400) {
+        const b = fs.writeBatch(db);
+        for (const o of ops.slice(i, i + 400)) {
+          const ref = fs.doc(db, o.col, o.id);
+          if (o.op === 'delete') b.delete(ref);
+          else if (o.op === 'update') b.set(ref, o.data, { merge: true });
+          else b.set(ref, o.data);
+        }
+        await b.commit();
+      }
     },
     async claimSetup(email, name) {
       const b = fs.writeBatch(db);
@@ -84,19 +103,35 @@ function localStore() {
   const emit = (n) => (subs[n] || []).forEach((cb) => cb(list(n)));
   const write = (n, obj) => { localStorage.setItem(key(n), JSON.stringify(obj)); emit(n); };
   window.addEventListener('storage', (e) => { if (e.key?.startsWith('hg_')) emit(e.key.slice(3)); });
-  const watch = (n, cb) => { (subs[n] ??= []).push(cb); queueMicrotask(() => cb(list(n))); };
+  const watch = (n, cb) => {
+    (subs[n] ??= []).push(cb);
+    queueMicrotask(() => cb(list(n)));
+    return () => { subs[n] = subs[n].filter((x) => x !== cb); };
+  };
   const set = (n, id, data) => { const o = read(n); o[id] = data; write(n, o); };
+  const update = (n, id, data) => { const o = read(n); o[id] = { ...o[id], ...data }; write(n, o); };
+  const remove = (n, id) => { const o = read(n); delete o[id]; write(n, o); };
   return {
     mode: 'local',
-    onAuth(cb) { cb({ email: 'demo@example.com', verified: true, name: 'Demo' }); },
+    onAuth(cb) { cb({ email: 'demo@example.com', name: 'Demo' }); },
+    signIn() { return Promise.resolve(); },
     signOut() { return Promise.resolve(); },
+    changeMyPassword() { return Promise.resolve(); },
+    createLogin() { return Promise.resolve(); },
     watch,
-    watchDoc(n, id, cb) { watch(n, (docs) => cb(docs.find((d) => d.id === id) || null)); },
+    watchWhere(n, field, value, cb) { return watch(n, (docs) => cb(docs.filter((d) => d[field] === value))); },
+    watchDoc(n, id, cb) { return watch(n, (docs) => cb(docs.find((d) => d.id === id) || null)); },
     async getDoc(n, id) { const v = read(n)[id]; return v ? { id, ...v } : null; },
+    async getAll(n) { return list(n); },
+    async batch(ops) {
+      for (const o of ops) {
+        if (o.op === 'delete') remove(o.col, o.id);
+        else if (o.op === 'update') update(o.col, o.id, o.data);
+        else set(o.col, o.id, o.data);
+      }
+    },
     async claimSetup(email, name) { set('leaders', email, { name, admin: true }); set('meta', 'setup', { owner: email }); },
     add(n, data) { const id = newId(); set(n, id, data); return id; },
-    set,
-    update(n, id, data) { const o = read(n); o[id] = { ...o[id], ...data }; write(n, o); },
-    remove(n, id) { const o = read(n); delete o[id]; write(n, o); },
+    set, update, remove,
   };
 }

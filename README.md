@@ -1,15 +1,17 @@
-# Higher Ground Points
+# Points & Attendance
 
 A phone-friendly web app for tracking points and attendance by week, shared live between leaders.
 
-- **Points:** pick a person, then tap a category button to add its preset points. Undo is in the pop-up, and ✕ removes an entry.
-- **Attendance:** tap names to mark who's here. Each person marked earns the attendance points set in Settings.
-- **Board:** weekly and all-time rankings.
-- **Settings (admins only):** people, categories and their point values, attendance points, leaders (by email), and a CSV backup.
-- **Sign-in:** leaders sign in with Google or email/password. Only emails on the leader list get in.
-- Weeks run **Wednesday to Tuesday**. Use ◀ ▶ to move between weeks.
+- **Locations & rooms:** each location (e.g. Higher Ground, Awana) has its own rooms. Each room has its own kids, point categories, attendance points, and leaderboard.
+- **Attendance** (first tab): tap kids who are here. A dropdown switches between the rooms you can access.
+- **Points:** only kids marked present are listed (toggle to see all). Tap a kid, then tap category buttons.
+- **Board:** weekly and all-time rankings for the room.
+- **Settings (admins only):** locations & rooms, leaders (usernames, passwords, room access), and per-room kids, categories, attendance points, import, and CSV backup.
+- **Sign-in:** username + password, no email needed. Admins create leaders and can set or reset anyone's password.
+- **Roles:** admins can do everything in every room; leaders take attendance and give points only in the rooms they're given.
+- Weeks run **Wednesday to Tuesday**.
 
-It's plain HTML/CSS/JS with no build step. Data lives in Firebase Firestore, so every phone sees changes within about a second.
+It's plain HTML/CSS/JS with no build step. Data lives in Firebase Firestore; `firestore.rules` enforces room access on Google's servers.
 
 ## Set up Firebase (free, ~10 min)
 
@@ -18,7 +20,7 @@ Until this is done the app runs in **demo mode**, with no login and data saved o
 1. Go to <https://console.firebase.google.com>, click **Create a project**, and name it (e.g. `higher-ground`). Google Analytics can be turned off.
 2. **Database:** open **Build → Firestore Database**, click **Create database**, pick a location near you, and start in **production mode**.
 3. **Rules:** in Firestore, open the **Rules** tab, replace everything with the contents of `firestore.rules` from this repo, and click **Publish**.
-4. **Sign-in:** open **Build → Authentication → Get started**. Under **Sign-in method**, enable **Google** and **Email/Password**.
+4. **Sign-in:** open **Build → Authentication → Get started**. Under **Sign-in method**, enable **Email/Password** (and optionally **Google** for older accounts).
 5. **Authorized domains:** in Authentication, go to **Settings → Authorized domains → Add domain** and add `dbc-jace.github.io`.
 6. **Web app config:** go to **Project settings** (gear icon) → **Your apps**, click the **</>** (Web) icon, and register the app. A nickname is all it needs; leave Hosting unchecked. Copy the `firebaseConfig` values into `firebase-config.js` and commit. These values are meant to be public; the rules are what protect the data.
 
@@ -38,16 +40,18 @@ On a phone, use **Share → Add to Home Screen** so it opens like an app.
 
 ## First use
 
-1. **Right after it goes live**, open the link and sign in (Google, or create an email account). Since no one has set it up yet, you'll be offered **Set up as admin**. Do this right away, because the first person to do it becomes the admin.
-2. In **Settings**, add people, categories with point values, and the attendance points.
-3. Under **Leaders**, add each leader's **name and email**, and make some of them admins if you like.
-4. Leaders open the link and sign in with that same email: with Google, or by tapping "Create account" and confirming the email. They stay signed in on their phone.
+1. Open the link and sign in. The first admin is set up once; after that, admins add everyone else.
+2. **Settings → Locations & rooms:** add locations (e.g. Awana) and their rooms (e.g. Sparks). New rooms can copy point categories from an existing room.
+3. **Settings → Leaders:** add each leader with a name, username, password, role, and rooms. Tell them their username and password.
+4. Use the room picker in Settings to choose a room, then add its kids, categories, and attendance points.
 
-To remove a leader, delete them in Settings; they lose access immediately.
+Forgot a password? An admin opens **Settings → Leaders → Edit → Set a new password**. (Behind the scenes this gives the leader a fresh login with the same username; the old one stops working.)
+
+Upgrading from the single-room version: publish the new `firestore.rules` first, then an admin opens the app once. Existing data moves into a "Higher Ground" location and room, and existing leaders keep their email as their username with the same password.
 
 ## About security & privacy
 
-- The **code** is public, but the **data** (names, points, attendance) lives in Firebase and is only readable by signed-in leaders on the leader list. The rules in `firestore.rules` enforce this on Google's servers, not just in the app.
+- The **code** is public, but the **data** (names, points, attendance) lives in Firebase and is only readable by signed-in leaders, and only for the rooms they've been given. The rules in `firestore.rules` enforce this on Google's servers, not just in the app.
 - Only admins can change people, categories, settings, or the leader list.
 - Keep data light: first names (or first name + last initial) are enough. Don't store birthdays, phone numbers, or addresses.
 - Never commit CSV exports or screenshots of the data to this repo.

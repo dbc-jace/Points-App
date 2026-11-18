@@ -144,3 +144,25 @@ textarea { width: 100%; padding: 12px; border: 1px solid var(--line); border-rad
 .fold.open .fold-head .caret { transform: rotate(90deg); }
 .fold-body { display: none; padding: 0 16px 16px; }
 .fold.open .fold-body { display: block; }
+
+/* Locations & rooms */
+.top h1 { line-height: 1.1; }
+.room-name { display: block; color: var(--muted); font-size: .85rem; font-weight: 600; }
+select { width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); font: inherit; -webkit-appearance: none; appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 50%, calc(100% - 12px) 50%; background-size: 6px 6px; background-repeat: no-repeat; padding-right: 32px; }
+.room-pick { display: flex; flex-direction: row; align-items: center; gap: 10px; background: var(--card); border-radius: var(--radius); padding: 8px 8px 8px 14px; margin-bottom: 10px; font-weight: 600; }
+.room-pick select { flex: 1; border: 0; background-color: var(--accent-soft); font-weight: 600; }
+.room-settings-head { margin: 18px 0 8px; }
+.room-settings-head p { margin: 0 0 6px; }
+.stack { display: grid; gap: 8px; }
+.loc-block { border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-bottom: 10px; }
+.loc-name { font-weight: 700; }
+.rooms-list { margin: 6px 0 0 12px; }
+.room-checks { display: grid; gap: 2px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.room-checks > small { color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; font-size: .72rem; }
+.room-checks .check { margin: 4px 0; }
+.leaders { list-style: none; padding: 0; margin: 14px 0 0; }
+.leaders > li { padding: 10px 0; border-top: 1px solid var(--line); }
+.leader-edit { display: grid; gap: 8px; margin-top: 10px; padding: 10px; background: var(--bg); border-radius: 10px; }
+.danger { color: var(--danger); }
