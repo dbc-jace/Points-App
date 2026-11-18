@@ -32,11 +32,11 @@ The repo must be **public** for free GitHub Pages.
 
 1. Merge this code into `main`.
 2. On GitHub, go to **Settings → Pages**, set Source to **Deploy from a branch**, choose `main` and `/ (root)`, and click **Save**.
-3. After a minute the app is live at `https://dbc-jace.github.io/Higher-Ground-App/`.
+3. After a minute the app is live at `https://dbc-jace.github.io/Points-App/`.
 
 On a phone, use **Share → Add to Home Screen** so it opens like an app.
 
-> Changing visibility on a phone: open github.com/dbc-jace/Higher-Ground-App/settings in the browser (the GitHub app can't do it), scroll to **Danger Zone → Change visibility**. If the page looks broken, turn on "Request Desktop Website."
+> Changing visibility on a phone: open github.com/dbc-jace/Points-App/settings in the browser (the GitHub app can't do it), scroll to **Danger Zone → Change visibility**. If the page looks broken, turn on "Request Desktop Website."
 
 ## First use
 
