@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.18-4';
+import { createStore, newId } from './store.js?v=2026.11.18-5';
 
-const APP_VERSION = '2026.11.18-4';
+const APP_VERSION = '2026.11.18-5';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -522,8 +522,6 @@ function viewSettings() {
   // Each location lists only its own people (the owner isn't listed; they're everywhere).
   const leaders = [...state.leaders].sort(byName)
     .filter((l) => !isOwnerL(l) && (hasAccessIn(l, loc) || adminOfL(l, loc.id) || state.leaderEdit === l.id));
-  const others = [...state.leaders].sort(byName)
-    .filter((l) => !isOwnerL(l) && !hasAccessIn(l, loc) && !adminOfL(l, loc.id) && canEditLeader(l));
   const leadersHtml = `
     <p class="muted small">People with access to <b>${esc(loc.name)}</b>.${myLocations().length > 1 ? ' Switch locations at the top for the others.' : ''}
       ${isOwner() ? '' : ' Only the owner can add or change admins.'}</p>
@@ -542,7 +540,11 @@ function viewSettings() {
             ${l.admin
               ? `<div class="room-checks"><small>Admin of</small>${locations().map((x) => `
                   <label class="check"><input type="checkbox" ${leaderLocs(l).includes(x.id) ? 'checked' : ''} value="${esc(x.id)}" data-leader="${esc(l.id)}" data-lf="loc"> ${esc(x.name)}</label>`).join('')}</div>`
-              : accessPicker(loc, l)}
+              : `${accessPicker(loc, l)}${isOwner() && locations().length > 1 ? `
+                <div class="room-checks"><small>Other locations</small>${locations().filter((x) => x.id !== loc.id).map((x) => `
+                  <label class="check"><input type="checkbox" ${hasAccessIn(l, x) ? 'checked' : ''} value="${esc(x.id)}" data-leader="${esc(l.id)}" data-lf="otherLoc"> ${esc(x.name)}</label>`).join('')}
+                  <p class="muted small">Checking a location gives all its rooms. Switch to that location to narrow it.</p>
+                </div>` : ''}`}
             ${canFullyManage(l) ? `
               <button class="ghost wide" data-act="setPassword" data-id="${esc(l.id)}">Set a new password</button>
               <button class="ghost wide danger" data-act="delLeader" data-id="${esc(l.id)}">Remove leader</button>`
@@ -551,13 +553,6 @@ function viewSettings() {
         </li>`;
       }).join('') || `<li class="muted small">No one has access to ${esc(loc.name)} yet.</li>`}
     </ul>
-    ${others.length ? `
-    <h3>Add an existing leader to ${esc(loc.name)}</h3>
-    <form data-form="addExisting" class="row">
-      <select name="id" required><option value="">Choose a leader…</option>${others.map((l) =>
-        `<option value="${esc(l.id)}">${esc(l.name)}${l.admin ? ' (admin)' : ''}</option>`).join('')}</select>
-      <button class="primary">Add</button>
-    </form>` : ''}
     <h3>Add a new leader</h3>
     <form data-form="addLeader" class="stack" autocomplete="off">
       <input name="name" placeholder="Name" required>
@@ -1035,14 +1030,6 @@ const forms = {
     store.add('categories', { roomId: state.roomId, name, points, order: max + 1 });
     logIt(`Added category "${name}" (${signed(points)})`, 'add', nowWeek());
   },
-  addExisting: (f) => {
-    const l = state.leaders.find((x) => x.id === f.get('id'));
-    const loc = curLoc();
-    if (!l || !loc || !canEditLeader(l)) return false;
-    store.update('leaders', l.id, { locations: [...new Set([...leaderLocs(l), loc.id])] });
-    state.leaderEdit = l.id; // open their access so it can be narrowed to some rooms
-    toast(`${esc(l.name)} ${l.admin ? 'now runs' : 'can now use all rooms in'} ${esc(loc.name)}.`);
-  },
   changeUsername: async (f) => {
     const l = me();
     const username = normUser(f.get('username'));
@@ -1150,6 +1137,14 @@ app.addEventListener('change', (e) => {
     if (el.dataset.lf === 'role' && isOwner()) store.update('leaders', l.id, { admin: el.value === 'admin', rooms: l.rooms || [], locations: leaderLocs(l) });
     if (el.dataset.lf === 'room') store.update('leaders', l.id, { rooms: toggle(l.rooms) });
     if (el.dataset.lf === 'loc' && (isOwner() || !l.admin)) store.update('leaders', l.id, { locations: toggle(l.locations) });
+    if (el.dataset.lf === 'otherLoc' && isOwner()) {
+      const locsWithout = leaderLocs(l).filter((x) => x !== el.value);
+      const there = new Set(roomsIn(el.value).map((r) => r.id));
+      store.update('leaders', l.id, el.checked
+        ? { locations: [...locsWithout, el.value] }
+        : { locations: locsWithout, rooms: (l.rooms || []).filter((id) => !there.has(id)) });
+      state.someRooms.delete(`${l.id}|${el.value}`);
+    }
     if (el.dataset.lf === 'access') {
       const locId = el.dataset.loc;
       const key = `${l.id}|${locId}`;
