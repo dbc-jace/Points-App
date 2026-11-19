@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.20-1';
+import { createStore, newId } from './store.js?v=2026.11.20-2';
 
-const APP_VERSION = '2026.11.20-1';
+const APP_VERSION = '2026.11.20-2';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -229,8 +229,8 @@ function mergeRooms() {
     state.v[c] = state.viewIds.flatMap((id) => roomData.get(id)?.[c] || []);
   }
 }
-const roomsLoaded = () => [...new Set([...state.viewIds, state.roomId].filter(Boolean))]
-  .every((id) => ROOM_COLS.every((c) => state.roomLoaded.has(`${id}|${c}`)));
+const roomReady = (id) => ROOM_COLS.every((c) => state.roomLoaded.has(`${id}|${c}`));
+const roomsLoaded = () => [...new Set([...state.viewIds, state.roomId].filter(Boolean))].every(roomReady);
 // The one room Settings works on.
 function setRoom(id) {
   if (id === state.roomId) return;
@@ -332,7 +332,10 @@ function render() {
   }
   if (!myLocations().length) return renderMsg("You don't have access to any rooms yet. Ask an admin to give you a room.", true);
   chooseRoom();
-  if (state.roomId && !roomsLoaded()) return renderMsg('Loading…');
+  // Full-page "Loading…" only the first time. After that, a newly checked room fills in when its data arrives
+  // instead of blanking the whole screen.
+  if (state.roomId && !roomsLoaded() && !state.shownRooms) return renderMsg('Loading…');
+  if (state.roomId && roomReady(state.roomId)) state.shownRooms = true;
 
   const loc = curLoc();
   if (pendingImport) {
@@ -417,7 +420,7 @@ const groupHead = (room, extra = '') => `<h3 class="group-head">${esc(room.name)
 
 function viewPoints() {
   const everyone = people();
-  if (!everyone.length) return emptyState(multiView() ? 'No kids in these rooms yet.' : 'No kids in this room yet.', adminOf(curLoc()?.id) ? 'Add kids in Settings.' : 'Ask an admin to add kids.');
+  if (!everyone.length) return (!roomsLoaded() ? '<p class="center muted">Loading…</p>' : '') || emptyState(multiView() ? 'No kids in these rooms yet.' : 'No kids in this room yet.', adminOf(curLoc()?.id) ? 'Add kids in Settings.' : 'Ask an admin to add kids.');
   const t = totals(state.week);
   const here = new Set(state.v.attendance.filter((a) => a.weekId === state.week).map((a) => a.personId));
   const ppl = state.showAllKids ? everyone : everyone.filter((p) => here.has(p.id));
@@ -474,7 +477,7 @@ function viewPerson(person, ppl, t) {
 
 function viewAttendance() {
   const ppl = people();
-  if (!ppl.length) return emptyState(multiView() ? 'No kids in these rooms yet.' : 'No kids in this room yet.', adminOf(curLoc()?.id) ? 'Add kids in Settings.' : 'Ask an admin to add kids.');
+  if (!ppl.length) return (!roomsLoaded() ? '<p class="center muted">Loading…</p>' : '') || emptyState(multiView() ? 'No kids in these rooms yet.' : 'No kids in this room yet.', adminOf(curLoc()?.id) ? 'Add kids in Settings.' : 'Ask an admin to add kids.');
   const here = new Set(state.v.attendance.filter((a) => a.weekId === state.week).map((a) => a.personId));
   const count = ppl.filter((p) => here.has(p.id)).length;
   const listHtml = (list) => `<ul class="att">
@@ -490,7 +493,7 @@ function viewAttendance() {
     <p class="center"><strong>${count} of ${ppl.length}</strong> here in ${viewRooms().length} rooms</p>
     ${sortToggle()}
     ${byRoomGroups(ppl).map((g) => groupHead(g.room, `${g.items.filter((p) => here.has(p.id)).length} of ${g.items.length} here · +${attendancePoints(g.room)} pts`)
-      + (g.items.length ? listHtml(g.items) : '<p class="muted small">No kids yet.</p>')).join('')}`;
+      + (g.items.length ? listHtml(g.items) : `<p class="muted small">${roomReady(g.room.id) ? 'No kids yet.' : 'Loading…'}</p>`)).join('')}`;
 }
 
 function viewBoard() {
@@ -525,7 +528,7 @@ function viewBoard() {
     ${mode === 'year' && ys.length > 1 ? `<label class="room-pick wide-pick"><span>Year</span><select data-role="boardYear" aria-label="Year">
       ${[...ys].reverse().map((y) => `<option value="${esc(y.id)}" ${y.id === range.id ? 'selected' : ''}>${esc(y.name)}</option>`).join('')}
     </select></label>` : ''}
-    ${!rows.length ? emptyState(multiView() ? 'No kids in these rooms yet.' : 'No kids in this room yet.', '')
+    ${!rows.length ? (!roomsLoaded() ? '<p class="center muted">Loading…</p>' : '') || emptyState(multiView() ? 'No kids in these rooms yet.' : 'No kids in this room yet.', '')
       : multiView() ? byRoomGroups(rows, (r) => r.p.roomId).filter((g) => g.items.length).map((g) => groupHead(g.room) + boardList(g.items)).join('')
       : boardList(rows)}`;
 }
