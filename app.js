@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.18-9';
+import { createStore, newId } from './store.js?v=2026.11.19-1';
 
-const APP_VERSION = '2026.11.18-9';
+const APP_VERSION = '2026.11.19-1';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -103,16 +103,23 @@ const categories = () => [...state.categories].sort(byOrder);
 const usernameOf = (l) => l.username || l.id;
 const roomLabel = (r) => `${locationOf(r)?.name ? locationOf(r).name + ' · ' : ''}${r.name}`;
 
-// School years: each location keeps a list of { id, name, start (week id) }. A year runs until the next one starts.
+// School years: each location keeps a list of { id, name, start (week id), end (date, last day) }.
+// A year runs through the week of its end date (or until the next year starts, whichever comes first).
 // Nothing is deleted when a new year starts; the Board just counts from the new start.
 const effWeek = (x) => (x.weekId === CARRYOVER ? weekStart(new Date(x.ts || 0)) : x.weekId); // starting totals count in the week they were imported
 const yearsOf = (loc) => [...(loc?.years || [])].sort((a, b) => String(a.start).localeCompare(String(b.start)));
 function yearRange(loc, id) {
   const ys = yearsOf(loc);
   const i = ys.findIndex((y) => y.id === id);
-  return i < 0 ? null : { ...ys[i], end: ys[i + 1]?.start || null };
+  return i < 0 ? null : { ...ys[i], lastWeek: ys[i].end ? weekStart(parseYmd(ys[i].end)) : null, next: ys[i + 1]?.start || null };
 }
-const currentYear = (loc) => [...yearsOf(loc)].reverse().find((y) => y.start <= weekStart(new Date())) || yearsOf(loc)[0] || null;
+const inYear = (y, w) => w >= y.start && (!y.end || w <= weekStart(parseYmd(y.end)));
+const currentYear = (loc) => {
+  const now = weekStart(new Date());
+  const started = [...yearsOf(loc)].reverse();
+  return started.find((y) => inYear(y, now)) || started.find((y) => y.start <= now) || yearsOf(loc)[0] || null;
+};
+const endLabel = (end) => parseYmd(end).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 
 // weekId = one week; range = { start, end } (a school year); neither = all time.
 function totals(weekId, range = null) {
@@ -121,7 +128,7 @@ function totals(weekId, range = null) {
     if (weekId) return x.weekId === weekId;
     if (!range) return true;
     const w = effWeek(x);
-    return w >= range.start && (!range.end || w < range.end);
+    return w >= range.start && (!range.lastWeek || w <= range.lastWeek) && (!range.next || w < range.next);
   };
   for (const e of state.entries) if (ok(e) && t.has(e.personId)) t.get(e.personId).pts += Number(e.points) || 0;
   for (const a of state.attendance) if (ok(a) && t.has(a.personId)) { const r = t.get(a.personId); r.pts += Number(a.points) || 0; r.att++; }
@@ -457,7 +464,10 @@ function yearsHtml(loc) {
   return `
     <p class="muted small">Starting a new year sets everyone's year total on the Board back to zero. Nothing is deleted: past years stay on the Board (pick the year there), and "All time" still adds up everything.</p>
     ${ys.length ? `<ul class="edit">${[...ys].reverse().map((y) => `<li>
-        <span class="grow"><b>${esc(y.name)}</b>${cur && y.id === cur.id ? ' <em class="badge">current</em>' : ''}<small class="email">Starts week of ${esc(weekLabel(y.start))}</small></span>
+        <span class="grow"><b>${esc(y.name)}</b>${cur && y.id === cur.id && inYear(y, weekStart(new Date())) ? ' <em class="badge">current</em>' : ''}
+          <small class="email">Starts week of ${esc(weekLabel(y.start))}</small>
+          <label class="small">Ends on <input type="date" data-role="yearEnd" data-id="${esc(y.id)}" value="${esc(y.end || '')}" aria-label="End date for ${esc(y.name)}"></label>
+          ${y.end ? '' : '<small class="muted block">No end date yet</small>'}</span>
         <button class="x" data-act="delYear" data-id="${esc(y.id)}" data-name="${esc(y.name)}" aria-label="Delete year">✕</button>
       </li>`).join('')}</ul>` : '<p class="small">No years yet, so the Board counts all time. Tip: add this year first, starting the week it began, so this year\'s points count toward it.</p>'}
     <h3>${ys.length ? 'Start a new year' : 'Add a year'}</h3>
@@ -465,6 +475,7 @@ function yearsHtml(loc) {
       <input type="hidden" name="locationId" value="${esc(loc.id)}">
       <input name="name" placeholder="Name (e.g. 2027–28)" required>
       <label>Starts on<input name="start" type="date" required value="${ymd(new Date())}"></label>
+      <label>Ends on<input name="end" type="date" required></label>
       <button class="primary wide">${ys.length ? 'Start new year' : 'Add year'}</button>
     </form>`;
 }
@@ -1455,9 +1466,11 @@ const forms = {
     if (!loc || !adminOf(loc.id)) return false;
     const name = f.get('name').trim();
     const start = weekStart(parseYmd(f.get('start')));
+    const end = f.get('end');
+    if (end < f.get('start')) { alert('The end date has to be after the start date.'); return false; }
     if ((loc.years || []).some((y) => y.start === start)) { alert('A year already starts that week.'); return false; }
-    store.update('locations', loc.id, { years: [...(loc.years || []), { id: newId(), name, start }] });
-    logIt(`Started school year "${name}" (week of ${weekLabel(start)})`, 'add', nowWeek(), roomsIn(loc.id)[0]);
+    store.update('locations', loc.id, { years: [...(loc.years || []), { id: newId(), name, start, end }] });
+    logIt(`Started school year "${name}" (week of ${weekLabel(start)} to ${endLabel(end)})`, 'add', nowWeek(), roomsIn(loc.id)[0]);
     state.board = 'year'; state.boardYear = null;
     toast(`${esc(name)} starts the week of ${esc(weekLabel(start))}.`);
   },
@@ -1539,6 +1552,15 @@ app.addEventListener('change', (e) => {
   if (el.dataset.role === 'loc') { setLoc(el.value); render(); return; }
   if (el.dataset.role === 'logRoom') { state.logRoom = el.value; render(); return; }
   if (el.dataset.role === 'boardYear') { state.boardYear = el.value; render(); return; }
+  if (el.dataset.role === 'yearEnd') {
+    const loc = curLoc();
+    const y = (loc?.years || []).find((x) => x.id === el.dataset.id);
+    if (!y || !adminOf(loc.id)) return;
+    if (el.value && el.value < y.start) { alert('The end date has to be after the year starts.'); render(); return; }
+    store.update('locations', loc.id, { years: loc.years.map((x) => (x.id === y.id ? { ...x, end: el.value || null } : x)) });
+    logIt(el.value ? `Set "${y.name}" to end ${endLabel(el.value)}` : `Removed the end date from "${y.name}"`, 'add', nowWeek(), roomsIn(loc.id)[0]);
+    return;
+  }
   if (el.dataset.leader) {
     const l = state.leaders.find((x) => x.id === el.dataset.leader);
     if (!l) return;
