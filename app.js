@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.19-3';
+import { createStore, newId } from './store.js?v=2026.11.19-4';
 
-const APP_VERSION = '2026.11.19-3';
+const APP_VERSION = '2026.11.19-4';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -14,7 +14,23 @@ const bannerEl = document.getElementById('banner');
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const byName = (a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' });
+// Names sort by first or last name. Each person's choice is saved on their account (and on this device).
+const cmp = (x, y) => String(x).localeCompare(String(y), undefined, { sensitivity: 'base' });
+const lastNameOf = (name) => {
+  const w = String(name || '').trim().split(/\s+/).filter((x) => !/^(jr|sr|ii|iii|iv)\.?$/i.test(x));
+  return w.length > 1 ? w[w.length - 1] : w[0] || '';
+};
+const sortMode = () => {
+  const mine = state.user ? me()?.sort : null;
+  if (mine === 'first' || mine === 'last') return mine;
+  try { return localStorage.getItem('hgui_sort') === 'last' ? 'last' : 'first'; } catch { return 'first'; }
+};
+const byName = (a, b) => (sortMode() === 'last' ? cmp(lastNameOf(a.name), lastNameOf(b.name)) : 0) || cmp(a.name, b.name);
+const sortToggle = () => `
+  <div class="sortbar"><span>Sort by</span>
+    <div class="seg mini">${[['first', 'First name'], ['last', 'Last name']].map(([v, label]) =>
+      `<button class="${sortMode() === v ? 'on' : ''}" data-act="sortNames" data-v="${v}">${label}</button>`).join('')}</div>
+  </div>`;
 const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0) || byName(a, b);
 const norm = (s) => String(s).trim().toLowerCase().replace(/\s+/g, ' ');
 const normUser = (s) => String(s || '').trim().toLowerCase();
@@ -316,6 +332,7 @@ function viewPoints() {
       <button class="primary wide" data-act="tab" data-tab="attendance">Go to Attendance</button>`;
   }
   return `${toggle}
+    ${sortToggle()}
     <ul class="kid-rows">
       ${ppl.map((p) => `<li><button data-act="pickPerson" data-id="${p.id}">
         <span class="name">${esc(p.name)}${state.showAllKids && !here.has(p.id) ? '<small>not marked here</small>' : ''}</span>
@@ -357,6 +374,7 @@ function viewAttendance() {
   const count = ppl.filter((p) => here.has(p.id)).length;
   return `
     <p class="center"><strong>${count} of ${ppl.length}</strong> here · +${attendancePoints()} pts each</p>
+    ${sortToggle()}
     <ul class="att">
       ${ppl.map((p) => `<li><button class="${here.has(p.id) ? 'on' : ''}" data-act="toggleAtt" data-id="${p.id}"><span class="box">${here.has(p.id) ? '✓' : ''}</span>${esc(p.name)}</button></li>`).join('')}
     </ul>`;
@@ -821,6 +839,7 @@ function viewSettings() {
   const leadersHtml = `
     <p class="muted small">People with access to <b>${esc(loc.name)}</b>.${myLocations().length > 1 ? ' Switch locations at the top for the others.' : ''}
       ${isOwner() ? '' : ' Only the owner can add or change admins.'}</p>
+    ${sortToggle()}
     <ul class="leaders">
       ${leaders.map((l) => {
         const editing = state.leaderEdit === l.id && canEditLeader(l);
@@ -888,6 +907,7 @@ function viewSettings() {
       <form data-form="addPerson" class="row">
         <input name="name" placeholder="Name" required><button class="primary">Add</button>
       </form>
+      ${sortToggle()}
       <ul class="edit">
         ${people().map((p) => `<li>
           <input value="${esc(p.name)}" data-col="people" data-id="${p.id}" data-field="name" aria-label="Name">
@@ -1061,6 +1081,12 @@ const actions = {
     try { localStorage.setItem(UI_KEY, JSON.stringify([...openSections])); } catch { /* ignore */ }
   },
   setAllKids: (d) => { state.showAllKids = d.v === '1'; },
+  sortNames: (d) => {
+    const v = d.v === 'last' ? 'last' : 'first';
+    try { localStorage.setItem('hgui_sort', v); } catch {}
+    const l = me();
+    if (l) store.update('leaders', l.id, { sort: v });
+  },
   theme: (d) => {
     try { if (d.v === 'auto') localStorage.removeItem('hgui_theme'); else localStorage.setItem('hgui_theme', d.v); } catch { /* ignore */ }
     if (d.v === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = d.v;
