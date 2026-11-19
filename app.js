@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.19-1';
+import { createStore, newId } from './store.js?v=2026.11.19-2';
 
-const APP_VERSION = '2026.11.19-1';
+const APP_VERSION = '2026.11.19-2';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -364,7 +364,8 @@ function viewAttendance() {
 function viewBoard() {
   const loc = curLoc();
   const ys = yearsOf(loc);
-  const mode = state.board === 'year' && !ys.length ? 'all' : state.board;
+  // Toggle is This week / this year. All time only shows up when the location has no years yet.
+  const mode = state.board === 'week' ? 'week' : ys.length ? 'year' : 'all';
   let range = null;
   if (mode === 'year') {
     const yid = ys.some((y) => y.id === state.boardYear) ? state.boardYear : currentYear(loc).id;
@@ -374,10 +375,10 @@ function viewBoard() {
   const rows = people().map((p) => ({ p, ...t.get(p.id) })).sort((a, b) => b.pts - a.pts || byName(a.p, b.p));
   let rank = 0, prev = null;
   return `
-    <div class="seg ${ys.length ? 'three' : ''}">
+    <div class="seg">
       <button class="${mode === 'week' ? 'on' : ''}" data-act="board" data-v="week">This week</button>
-      ${ys.length ? `<button class="${mode === 'year' ? 'on' : ''}" data-act="board" data-v="year">${esc(range && mode === 'year' ? range.name : currentYear(loc).name)}</button>` : ''}
-      <button class="${mode === 'all' ? 'on' : ''}" data-act="board" data-v="all">All time</button>
+      ${ys.length ? `<button class="${mode === 'year' ? 'on' : ''}" data-act="board" data-v="year">${esc(range && mode === 'year' ? range.name : currentYear(loc).name)}</button>`
+        : `<button class="${mode === 'all' ? 'on' : ''}" data-act="board" data-v="all">All time</button>`}
     </div>
     ${mode === 'year' && ys.length > 1 ? `<label class="room-pick wide-pick"><span>Year</span><select data-role="boardYear" aria-label="Year">
       ${[...ys].reverse().map((y) => `<option value="${esc(y.id)}" ${y.id === range.id ? 'selected' : ''}>${esc(y.name)}</option>`).join('')}
@@ -894,6 +895,7 @@ function viewSettings() {
       <button class="ghost wide" data-act="export">Download this room (Excel)</button>
       <button class="ghost wide" data-act="exportAll">${isOwner() ? 'Download everything: all locations &amp; rooms (Excel)'
         : `Download everything in ${esc(locations().filter((x) => adminOf(x.id)).map((x) => x.name).join(' & '))} (Excel)`}</button>
+      <button class="ghost wide" data-act="exportAllTime">Download all-time points for ${esc(loc.name)} (CSV)</button>
       <p class="muted small">A tab for each location${isOwner() ? '' : ' you run'}, with each room listed down the page: every kid's total points, times here, and points in each category (all time). Opens in Excel or Google Sheets.</p>`)}
     ${footer}`;
 }
@@ -1189,6 +1191,30 @@ const actions = {
     const locs = locations().filter((l) => adminOf(l.id));
     await downloadWorkbook(locs.map((l) => ({ name: l.name, rooms: roomsIn(l.id) })),
       `${isOwner() ? 'all-locations' : 'my-locations'}-${ymd(new Date())}.xlsx`);
+  },
+  // Every kid in the location and their points across all years. No rooms.
+  exportAllTime: async () => {
+    const loc = curLoc();
+    if (!loc || !adminOf(loc.id)) return;
+    toast('Building the file…');
+    try {
+      const ids = new Set(roomsIn(loc.id).map((r) => r.id));
+      const [ppl, ents, atts] = await Promise.all(['people', 'entries', 'attendance'].map(async (c) =>
+        (await Promise.all([...ids].map((id) => store.getWhere(c, 'roomId', id)))).flat()));
+      const pts = new Map(ppl.map((p) => [p.id, 0]));
+      for (const x of [...ents, ...atts]) if (pts.has(x.personId)) pts.set(x.personId, pts.get(x.personId) + (Number(x.points) || 0));
+      const rows = ppl.map((p) => [p.name, pts.get(p.id)]).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      const cell = (v) => (/[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+      const csv = [['Kid', 'All-time points'], ...rows].map((r) => r.map(cell).join(',')).join('\r\n');
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }));
+      a.download = `${slug(loc.name)}-all-time-points-${ymd(new Date())}.csv`;
+      a.click();
+      toast('Downloaded.');
+    } catch (e) {
+      console.error(e);
+      alert('Could not build the file. Check your connection and try again.');
+    }
   },
   export: async () => {
     const r = currentRoom();
