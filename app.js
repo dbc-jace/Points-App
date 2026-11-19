@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.19-4';
+import { createStore, newId } from './store.js?v=2026.11.19-5';
 
-const APP_VERSION = '2026.11.19-4';
+const APP_VERSION = '2026.11.19-5';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -16,11 +16,16 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 // Names sort by first or last name. Each person's choice is saved on their account (and on this device).
 const cmp = (x, y) => String(x).localeCompare(String(y), undefined, { sensitivity: 'base' });
+// Last name = the last word, keeping particles like "De Angelo" or "Van Heerden" together, skipping Jr./Sr./II.
 const lastNameOf = (name) => {
   const w = String(name || '').trim().split(/\s+/).filter((x) => !/^(jr|sr|ii|iii|iv)\.?$/i.test(x));
-  return w.length > 1 ? w[w.length - 1] : w[0] || '';
+  if (w.length < 2) return w[0] || '';
+  let i = w.length - 1;
+  while (i > 1 && /^(de|del|della|der|den|di|da|du|van|von|la|le|st\.?|mc|mac)$/i.test(w[i - 1])) i--;
+  return w.slice(i).join(' ');
 };
 const sortMode = () => {
+  if (state.sortPick) return state.sortPick; // just tapped on this device: use it right away
   const mine = state.user ? me()?.sort : null;
   if (mine === 'first' || mine === 'last') return mine;
   try { return localStorage.getItem('hgui_sort') === 'last' ? 'last' : 'first'; } catch { return 'first'; }
@@ -31,7 +36,7 @@ const sortToggle = () => `
     <div class="seg mini">${[['first', 'First name'], ['last', 'Last name']].map(([v, label]) =>
       `<button class="${sortMode() === v ? 'on' : ''}" data-act="sortNames" data-v="${v}">${label}</button>`).join('')}</div>
   </div>`;
-const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0) || byName(a, b);
+const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0) || cmp(a.name, b.name); // rooms, categories: never by last name
 const norm = (s) => String(s).trim().toLowerCase().replace(/\s+/g, ' ');
 const normUser = (s) => String(s || '').trim().toLowerCase();
 const slug = (s) => normUser(s).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'user';
@@ -1083,6 +1088,7 @@ const actions = {
   setAllKids: (d) => { state.showAllKids = d.v === '1'; },
   sortNames: (d) => {
     const v = d.v === 'last' ? 'last' : 'first';
+    state.sortPick = v;
     try { localStorage.setItem('hgui_sort', v); } catch {}
     const l = me();
     if (l) store.update('leaders', l.id, { sort: v });
