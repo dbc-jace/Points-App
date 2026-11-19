@@ -102,6 +102,8 @@ service cloud.firestore {
     match /locations/{id} {
       allow read: if isLeader();
       allow write: if isOwner();
+      // A location's admins may start/remove school years there, nothing else.
+      allow update: if adminOf(id) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['years']);
     }
 
     match /rooms/{id} {
@@ -140,12 +142,13 @@ service cloud.firestore {
     }
 
     // Activity log: anyone signed in writes their own lines; only the location's admins (and the owner) read them.
-    // Lines can't be edited or deleted.
+    // Lines can't be edited. Only the owner can erase them.
     match /log/{id} {
       allow read: if isOwner() || (isAdminFlag() && resource.data.locationId in myLocs());
       allow create: if isLeader() && request.resource.data.leaderEmail == myEmail()
         && (adminOf(request.resource.data.locationId)
             || (canRoom(request.resource.data.roomId) && roomLoc(request.resource.data.roomId) == request.resource.data.locationId));
+      allow delete: if isOwner();
     }
 
     match /settings/{id} {
