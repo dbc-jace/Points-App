@@ -203,3 +203,6 @@ select { width: 100%; padding: 12px; border: 1px solid var(--line); border-radiu
 .group-head { margin: 16px 4px 6px; font-size: .95rem; }
 .group-head small { color: var(--muted); font-weight: 500; }
 .person-head small.muted { display: block; }
+
+.room-tag { font-style: normal; font-size: .7rem; font-weight: 600; color: var(--accent); background: var(--accent-soft); padding: 2px 7px; border-radius: 999px; white-space: nowrap; margin-left: 6px; vertical-align: middle; }
+.att button .grow { flex: 1; text-align: left; }
