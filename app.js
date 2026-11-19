@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.19-6';
+import { createStore, newId } from './store.js?v=2026.11.20-1';
 
-const APP_VERSION = '2026.11.19-6';
+const APP_VERSION = '2026.11.20-1';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -74,8 +74,11 @@ const state = {
   globalLoaded: new Set(),
   roomLoaded: new Set(),
   leaders: [], locations: [], rooms: [], settings: [],
-  people: [], categories: [], entries: [], attendance: [], // current room only
-  roomId: null,
+  people: [], categories: [], entries: [], attendance: [], // the room being set up in Settings (state.roomId) only
+  v: { people: [], categories: [], entries: [], attendance: [] }, // every room checked in the Rooms picker
+  roomId: null,     // one room: what Settings sets up, and the main room when only one is checked
+  viewIds: [],      // rooms checked in the Rooms picker (Attendance, Points, Board)
+  roomPickOpen: false,
   tab: 'attendance',
   showAllKids: false,
   week: weekStart(new Date()),
@@ -131,8 +134,14 @@ const myRooms = () => {
 };
 const currentRoom = () => state.rooms.find((r) => r.id === state.roomId);
 const locationOf = (room) => state.locations.find((l) => l.id === room?.locationId);
-const attendancePoints = () => Number(currentRoom()?.attendancePoints ?? 10);
-const people = () => [...state.people].sort(byName);
+const roomById = (id) => state.rooms.find((r) => r.id === id);
+const attendancePoints = (room = currentRoom()) => Number(room?.attendancePoints ?? 10);
+const viewRooms = () => roomsHere().filter((r) => state.viewIds.includes(r.id));
+const multiView = () => viewRooms().length > 1;
+// Kids in the checked rooms (Attendance, Points, Board).
+const people = () => [...state.v.people].sort(byName);
+// Kids in the one room being set up (Settings).
+const roomPeople = () => [...state.people].sort(byName);
 const categories = () => [...state.categories].sort(byOrder);
 const usernameOf = (l) => l.username || l.id;
 const roomLabel = (r) => `${locationOf(r)?.name ? locationOf(r).name + ' · ' : ''}${r.name}`;
@@ -157,15 +166,15 @@ const endLabel = (end) => parseYmd(end).toLocaleDateString(undefined, { month: '
 
 // weekId = one week; range = { start, end } (a school year); neither = all time.
 function totals(weekId, range = null) {
-  const t = new Map(state.people.map((p) => [p.id, { pts: 0, att: 0 }]));
+  const t = new Map(state.v.people.map((p) => [p.id, { pts: 0, att: 0 }]));
   const ok = (x) => {
     if (weekId) return x.weekId === weekId;
     if (!range) return true;
     const w = effWeek(x);
     return w >= range.start && (!range.lastWeek || w <= range.lastWeek) && (!range.next || w < range.next);
   };
-  for (const e of state.entries) if (ok(e) && t.has(e.personId)) t.get(e.personId).pts += Number(e.points) || 0;
-  for (const a of state.attendance) if (ok(a) && t.has(a.personId)) { const r = t.get(a.personId); r.pts += Number(a.points) || 0; r.att++; }
+  for (const e of state.v.entries) if (ok(e) && t.has(e.personId)) t.get(e.personId).pts += Number(e.points) || 0;
+  for (const a of state.v.attendance) if (ok(a) && t.has(a.personId)) { const r = t.get(a.personId); r.pts += Number(a.points) || 0; r.att++; }
   return t;
 }
 
@@ -189,25 +198,59 @@ function showError(msg) {
 
 /* ---------- rooms ---------- */
 const ROOM_KEY = 'hgui_room';
-let roomUnsubs = [];
-function setRoom(id) {
-  if (id === state.roomId && roomUnsubs.length) return;
-  roomUnsubs.forEach((u) => u && u());
-  roomUnsubs = [];
-  state.roomId = id;
-  state.personId = null; state.mergeFrom = null; state.importPreview = null;
-  state.roomLoaded = new Set();
-  for (const c of ROOM_COLS) state[c] = [];
-  if (!id) return;
-  try { localStorage.setItem(ROOM_KEY, id); } catch { /* ignore */ }
-  for (const c of ROOM_COLS) {
-    roomUnsubs.push(store.watchWhere(c, 'roomId', id, (docs) => {
-      if (state.roomId !== id) return;
-      state[c] = docs;
-      state.roomLoaded.add(c);
-      softRender();
-    }));
+const VIEW_KEY = 'hgui_view_';
+// Watch every room that is checked, plus the room being set up in Settings. One watcher per room + collection.
+const roomWatch = new Map(); // roomId -> [unsub...]
+const roomData = new Map();  // roomId -> { people, categories, entries, attendance }
+function syncRooms() {
+  const want = new Set([...state.viewIds, state.roomId].filter(Boolean));
+  for (const [id, unsubs] of roomWatch) {
+    if (want.has(id)) continue;
+    unsubs.forEach((u) => u && u());
+    roomWatch.delete(id); roomData.delete(id);
+    for (const c of ROOM_COLS) state.roomLoaded.delete(`${id}|${c}`);
   }
+  for (const id of want) {
+    if (roomWatch.has(id)) continue;
+    roomData.set(id, Object.fromEntries(ROOM_COLS.map((c) => [c, []])));
+    roomWatch.set(id, ROOM_COLS.map((c) => store.watchWhere(c, 'roomId', id, (docs) => {
+      if (!roomWatch.has(id)) return;
+      roomData.get(id)[c] = docs;
+      state.roomLoaded.add(`${id}|${c}`);
+      mergeRooms();
+      softRender();
+    })));
+  }
+  mergeRooms();
+}
+function mergeRooms() {
+  for (const c of ROOM_COLS) {
+    state[c] = roomData.get(state.roomId)?.[c] || [];
+    state.v[c] = state.viewIds.flatMap((id) => roomData.get(id)?.[c] || []);
+  }
+}
+const roomsLoaded = () => [...new Set([...state.viewIds, state.roomId].filter(Boolean))]
+  .every((id) => ROOM_COLS.every((c) => state.roomLoaded.has(`${id}|${c}`)));
+// The one room Settings works on.
+function setRoom(id) {
+  if (id === state.roomId) return;
+  state.roomId = id;
+  state.mergeFrom = null; state.importPreview = null;
+  if (id) { try { localStorage.setItem(ROOM_KEY, id); } catch { /* ignore */ } }
+  // With only one room checked, picking a room anywhere switches the view to it too.
+  if (id && state.viewIds.length <= 1) setView([id]);
+  else syncRooms();
+}
+// The rooms checked in the Rooms picker.
+function setView(ids) {
+  const here = roomsHere().map((r) => r.id);
+  const list = here.filter((id) => ids.includes(id));
+  state.viewIds = list;
+  if (state.personId && !state.v.people.some((p) => p.id === state.personId && list.includes(p.roomId))) state.personId = null;
+  const loc = curLoc();
+  if (loc) { try { localStorage.setItem(VIEW_KEY + loc.id, JSON.stringify(list)); } catch { /* ignore */ } }
+  if (list.length && !list.includes(state.roomId)) { state.roomId = list[0]; try { localStorage.setItem(ROOM_KEY, list[0]); } catch { /* ignore */ } }
+  syncRooms();
 }
 /* ---------- current location (picked in Settings; everything else follows it) ---------- */
 // Locations this person can see: owner sees all; admins see the ones they run (even with no rooms yet);
@@ -224,14 +267,52 @@ function setLoc(id) {
   try { localStorage.setItem('hgui_loc', id); } catch { /* ignore */ }
   chooseRoom();
 }
-// Keep the open room inside the current location (remembering the last room used).
+// Keep the checked rooms (and the Settings room) inside the current location, remembering the last ones used.
 function chooseRoom() {
   const here = roomsHere();
-  if (!here.length) { if (state.roomId) setRoom(null); return; }
-  if (here.some((r) => r.id === state.roomId)) return;
-  let saved = null;
-  try { saved = localStorage.getItem(ROOM_KEY); } catch { /* ignore */ }
-  setRoom(here.find((r) => r.id === saved)?.id || here[0].id);
+  if (!here.length) {
+    if (state.roomId || state.viewIds.length) { state.roomId = null; state.viewIds = []; syncRooms(); }
+    return;
+  }
+  const ids = here.map((r) => r.id);
+  const okView = state.viewIds.length && state.viewIds.every((id) => ids.includes(id));
+  const okRoom = ids.includes(state.roomId);
+  if (okView && okRoom) return;
+  let view = okView ? state.viewIds : null;
+  if (!view) {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(VIEW_KEY + curLoc().id)); } catch { /* ignore */ }
+    view = Array.isArray(saved) ? saved.filter((id) => ids.includes(id)) : [];
+  }
+  let one = okRoom ? state.roomId : null;
+  if (!one) { try { one = localStorage.getItem(ROOM_KEY); } catch { /* ignore */ } }
+  if (!ids.includes(one)) one = view[0] || ids[0];
+  if (!view.length) view = [one];
+  state.roomId = one;
+  state.viewIds = view;
+  if (!view.includes(one)) state.roomId = view[0];
+  syncRooms();
+}
+
+// Rooms picker: a checkbox for each room in this location. Shown on every tab when there's more than one room.
+function roomsLabel() {
+  const vr = viewRooms(), all = roomsHere();
+  if (!vr.length) return 'No rooms yet';
+  if (vr.length === all.length && all.length > 1) return `All rooms (${all.length})`;
+  return vr.map((r) => r.name).join(', ');
+}
+function roomMulti() {
+  const all = roomsHere();
+  if (all.length < 2) return '';
+  const on = new Set(state.viewIds);
+  return `<details class="room-multi" ${state.roomPickOpen ? 'open' : ''}>
+    <summary><span>Rooms</span><b>${esc(roomsLabel())}</b><i aria-hidden="true">▾</i></summary>
+    <div class="room-multi-list">
+      <label class="check all"><input type="checkbox" data-role="viewAll" ${on.size === all.length ? 'checked' : ''}> <b>All rooms</b></label>
+      ${all.map((r) => `<label class="check"><input type="checkbox" data-role="viewRoom" value="${esc(r.id)}" ${on.has(r.id) ? 'checked' : ''}> ${esc(r.name)}</label>`).join('')}
+      <button class="primary wide small" data-act="roomPickDone">Done</button>
+    </div>
+  </details>`;
 }
 
 function roomSelect(extraClass = '') {
@@ -251,7 +332,7 @@ function render() {
   }
   if (!myLocations().length) return renderMsg("You don't have access to any rooms yet. Ask an admin to give you a room.", true);
   chooseRoom();
-  if (state.roomId && state.roomLoaded.size < ROOM_COLS.length) return renderMsg('Loading…');
+  if (state.roomId && !roomsLoaded()) return renderMsg('Loading…');
 
   const loc = curLoc();
   if (pendingImport) {
@@ -271,11 +352,11 @@ function render() {
 
   app.innerHTML = `
     <header class="top">
-      <div><h1>${esc(loc?.name || APP_NAME)}</h1><small class="room-name">${esc(room?.name || 'No rooms yet')}</small></div>
+      <div><h1>${esc(loc?.name || APP_NAME)}</h1><small class="room-name">${esc(state.tab === 'settings' ? (room?.name || 'No rooms yet') : roomsLabel())}</small></div>
       <button class="link" data-act="logout">${esc(leader.name)} · Log out</button>
     </header>
     ${store.mode === 'local' ? '<div class="demo">Demo mode: no login, and data is saved on this device only.</div>' : ''}
-    ${state.tab === 'attendance' && roomsHere().length > 1 ? roomSelect() : ''}
+    ${roomMulti()}
     ${showWeek ? `
       <nav class="week">
         <button data-act="week" data-n="-1" aria-label="Previous week">◀</button>
@@ -328,11 +409,17 @@ function renderNoAccess() {
     <button class="link" data-act="logout">Log out</button>`);
 }
 
+// Group a list by room (in room order) when more than one room is checked.
+function byRoomGroups(list, roomOfItem = (x) => x.roomId) {
+  return viewRooms().map((r) => ({ room: r, items: list.filter((x) => roomOfItem(x) === r.id) }));
+}
+const groupHead = (room, extra = '') => `<h3 class="group-head">${esc(room.name)}${extra ? ` <small>${extra}</small>` : ''}</h3>`;
+
 function viewPoints() {
   const everyone = people();
-  if (!everyone.length) return emptyState('No kids in this room yet.', adminOf(curLoc()?.id) ? 'Add kids in Settings.' : 'Ask an admin to add kids.');
+  if (!everyone.length) return emptyState(multiView() ? 'No kids in these rooms yet.' : 'No kids in this room yet.', adminOf(curLoc()?.id) ? 'Add kids in Settings.' : 'Ask an admin to add kids.');
   const t = totals(state.week);
-  const here = new Set(state.attendance.filter((a) => a.weekId === state.week).map((a) => a.personId));
+  const here = new Set(state.v.attendance.filter((a) => a.weekId === state.week).map((a) => a.personId));
   const ppl = state.showAllKids ? everyone : everyone.filter((p) => here.has(p.id));
   const person = everyone.find((p) => p.id === state.personId);
   if (person) return viewPerson(person, ppl, t);
@@ -348,19 +435,20 @@ function viewPoints() {
       <p>Take attendance first, then come back to give points.</p></div>
       <button class="primary wide" data-act="tab" data-tab="attendance">Go to Attendance</button>`;
   }
-  return `${toggle}
-    ${sortToggle()}
-    <ul class="kid-rows">
-      ${ppl.map((p) => `<li><button data-act="pickPerson" data-id="${p.id}">
+  const rowsHtml = (list) => `<ul class="kid-rows">
+      ${list.map((p) => `<li><button data-act="pickPerson" data-id="${p.id}">
         <span class="name">${esc(listName(p.name))}${state.showAllKids && !here.has(p.id) ? '<small>not marked here</small>' : ''}</span>
         <b>${t.get(p.id).pts}</b><span class="chev">›</span></button></li>`).join('')}
     </ul>`;
+  return `${toggle}
+    ${sortToggle()}
+    ${multiView() ? byRoomGroups(ppl).filter((g) => g.items.length).map((g) => groupHead(g.room) + rowsHtml(g.items)).join('') : rowsHtml(ppl)}`;
 }
 
 function viewPerson(person, ppl, t) {
-  const cats = categories();
-  const list = state.entries.filter((e) => e.personId === person.id && e.weekId === state.week).sort((a, b) => b.ts - a.ts);
-  const att = state.attendance.find((a) => a.personId === person.id && a.weekId === state.week);
+  const cats = state.v.categories.filter((c) => c.roomId === person.roomId).sort(byOrder);
+  const list = state.v.entries.filter((e) => e.personId === person.id && e.weekId === state.week).sort((a, b) => b.ts - a.ts);
+  const att = state.v.attendance.find((a) => a.personId === person.id && a.weekId === state.week);
   const i = ppl.findIndex((p) => p.id === person.id);
   const next = i >= 0 && i < ppl.length - 1 ? ppl[i + 1] : null;
   return `
@@ -369,7 +457,7 @@ function viewPerson(person, ppl, t) {
       ${next ? `<button class="link" data-act="pickPerson" data-id="${next.id}">${esc(listName(next.name))} ›</button>` : ''}
     </div>
     <div class="person-head">
-      <h2>${esc(person.name)}</h2>
+      <h2>${esc(person.name)}</h2>${multiView() ? `<small class="muted">${esc(roomById(person.roomId)?.name || '')}</small>` : ''}
       <div class="big">${t.get(person.id).pts} <small>pts this week</small></div>
     </div>
     ${cats.length ? `<div class="cat-grid">
@@ -386,15 +474,23 @@ function viewPerson(person, ppl, t) {
 
 function viewAttendance() {
   const ppl = people();
-  if (!ppl.length) return emptyState('No kids in this room yet.', adminOf(curLoc()?.id) ? 'Add kids in Settings.' : 'Ask an admin to add kids.');
-  const here = new Set(state.attendance.filter((a) => a.weekId === state.week).map((a) => a.personId));
+  if (!ppl.length) return emptyState(multiView() ? 'No kids in these rooms yet.' : 'No kids in this room yet.', adminOf(curLoc()?.id) ? 'Add kids in Settings.' : 'Ask an admin to add kids.');
+  const here = new Set(state.v.attendance.filter((a) => a.weekId === state.week).map((a) => a.personId));
   const count = ppl.filter((p) => here.has(p.id)).length;
-  return `
+  const listHtml = (list) => `<ul class="att">
+      ${list.map((p) => `<li><button class="${here.has(p.id) ? 'on' : ''}" data-act="toggleAtt" data-id="${p.id}"><span class="box">${here.has(p.id) ? '✓' : ''}</span>${esc(listName(p.name))}</button></li>`).join('')}
+    </ul>`;
+  if (!multiView()) {
+    return `
     <p class="center"><strong>${count} of ${ppl.length}</strong> here · +${attendancePoints()} pts each</p>
     ${sortToggle()}
-    <ul class="att">
-      ${ppl.map((p) => `<li><button class="${here.has(p.id) ? 'on' : ''}" data-act="toggleAtt" data-id="${p.id}"><span class="box">${here.has(p.id) ? '✓' : ''}</span>${esc(listName(p.name))}</button></li>`).join('')}
-    </ul>`;
+    ${listHtml(ppl)}`;
+  }
+  return `
+    <p class="center"><strong>${count} of ${ppl.length}</strong> here in ${viewRooms().length} rooms</p>
+    ${sortToggle()}
+    ${byRoomGroups(ppl).map((g) => groupHead(g.room, `${g.items.filter((p) => here.has(p.id)).length} of ${g.items.length} here · +${attendancePoints(g.room)} pts`)
+      + (g.items.length ? listHtml(g.items) : '<p class="muted small">No kids yet.</p>')).join('')}`;
 }
 
 function viewBoard() {
@@ -409,7 +505,17 @@ function viewBoard() {
   }
   const t = totals(mode === 'week' ? state.week : null, range);
   const rows = people().map((p) => ({ p, ...t.get(p.id) })).sort((a, b) => b.pts - a.pts || byName(a.p, b.p));
-  let rank = 0, prev = null;
+  const boardList = (list) => {
+    let rank = 0, prev = null;
+    return `<ol class="board">
+      ${list.map((r, i) => { if (r.pts !== prev) { rank = i + 1; prev = r.pts; } return `
+        <li data-act="pickPerson" data-id="${r.p.id}" data-go="points">
+          <span class="rank r${rank}">${rank}</span>
+          <span class="name">${esc(r.p.name)}<small>${r.att} attended</small></span>
+          <b>${r.pts}</b>
+        </li>`; }).join('')}
+    </ol>`;
+  };
   return `
     <div class="seg">
       <button class="${mode === 'week' ? 'on' : ''}" data-act="board" data-v="week">This week</button>
@@ -419,14 +525,9 @@ function viewBoard() {
     ${mode === 'year' && ys.length > 1 ? `<label class="room-pick wide-pick"><span>Year</span><select data-role="boardYear" aria-label="Year">
       ${[...ys].reverse().map((y) => `<option value="${esc(y.id)}" ${y.id === range.id ? 'selected' : ''}>${esc(y.name)}</option>`).join('')}
     </select></label>` : ''}
-    ${!rows.length ? emptyState('No kids in this room yet.', '') : `<ol class="board">
-      ${rows.map((r, i) => { if (r.pts !== prev) { rank = i + 1; prev = r.pts; } return `
-        <li data-act="pickPerson" data-id="${r.p.id}" data-go="points">
-          <span class="rank r${rank}">${rank}</span>
-          <span class="name">${esc(r.p.name)}<small>${r.att} attended</small></span>
-          <b>${r.pts}</b>
-        </li>`; }).join('')}
-    </ol>`}`;
+    ${!rows.length ? emptyState(multiView() ? 'No kids in these rooms yet.' : 'No kids in this room yet.', '')
+      : multiView() ? byRoomGroups(rows, (r) => r.p.roomId).filter((g) => g.items.length).map((g) => groupHead(g.room) + boardList(g.items)).join('')
+      : boardList(rows)}`;
 }
 
 /* ---------- settings (admins) ---------- */
@@ -677,7 +778,11 @@ async function deleteRoomAll(r) {
   for (const c of ROOM_COLS) ops.push(...delOps(c, await roomDocs(c, [r.id])));
   await store.batch(ops);
   await store.batch([{ op: 'delete', col: 'rooms', id: r.id }]);
-  if (state.roomId === r.id) setRoom(null);
+  if (state.viewIds.includes(r.id) || state.roomId === r.id) {
+    state.viewIds = state.viewIds.filter((id) => id !== r.id);
+    if (state.roomId === r.id) state.roomId = null;
+    syncRooms();
+  }
 }
 async function eraseIn(loc, what) {
   const rooms = roomsIn(loc.id);
@@ -926,7 +1031,7 @@ function viewSettings() {
       </form>
       ${sortToggle()}
       <ul class="edit">
-        ${people().map((p) => `<li>
+        ${roomPeople().map((p) => `<li>
           <input value="${esc(p.name)}" data-col="people" data-id="${p.id}" data-field="name" aria-label="Name">
           <button class="ghost small" data-act="mergeStart" data-id="${p.id}">Merge</button>
           <button class="x" data-act="del" data-col="people" data-id="${p.id}" data-name="${esc(p.name)}" aria-label="Delete">✕</button>
@@ -986,16 +1091,17 @@ const nowWeek = () => weekStart(new Date());
 const signed = (n) => `${n >= 0 ? '+' : ''}${n}`;
 
 function addEntry(person, name, points, categoryId = null) {
+  const room = roomById(person.roomId) || currentRoom();
   const id = store.add('entries', {
-    roomId: state.roomId, weekId: state.week, personId: person.id, personName: person.name,
+    roomId: room.id, weekId: state.week, personId: person.id, personName: person.name,
     categoryId, categoryName: name, points,
     leaderEmail: state.user.email, leaderName: me()?.name || '', ts: Date.now(),
   });
-  logIt(`${signed(points)} ${name} → ${person.name}`, 'add');
+  logIt(`${signed(points)} ${name} → ${person.name}`, 'add', state.week, room);
   navigator.vibrate?.(15);
   toast(`${signed(points)} ${esc(name)} → ${esc(person.name)}`, () => {
     store.remove('entries', id);
-    logIt(`Undid ${signed(points)} ${name} → ${person.name}`, 'del');
+    logIt(`Undid ${signed(points)} ${name} → ${person.name}`, 'del', state.week, room);
   });
 }
 
@@ -1019,7 +1125,8 @@ async function setLeaderPassword(l, pw) {
 }
 
 const actions = {
-  tab: (d) => { state.tab = d.tab; state.personId = null; requestAnimationFrame(() => window.scrollTo(0, 0)); },
+  roomPickDone: () => { state.roomPickOpen = false; },
+  tab: (d) => { state.tab = d.tab; state.personId = null; state.roomPickOpen = false; requestAnimationFrame(() => window.scrollTo(0, 0)); },
   week: (d) => { state.week = shiftWeek(state.week, Number(d.n)); },
   thisWeek: () => { state.week = weekStart(new Date()); },
   board: (d) => { state.board = d.v; },
@@ -1039,12 +1146,12 @@ const actions = {
     requestAnimationFrame(() => window.scrollTo(0, y));
   },
   give: (d) => {
-    const person = state.people.find((p) => p.id === state.personId);
-    const cat = state.categories.find((c) => c.id === d.id);
+    const person = state.v.people.find((p) => p.id === state.personId);
+    const cat = state.v.categories.find((c) => c.id === d.id);
     if (person && cat) addEntry(person, cat.name, Number(cat.points) || 0, cat.id);
   },
   custom: () => {
-    const person = state.people.find((p) => p.id === state.personId);
+    const person = state.v.people.find((p) => p.id === state.personId);
     if (!person) return;
     const raw = prompt(`Points for ${person.name} (use a minus sign to take away):`);
     if (raw === null) return;
@@ -1054,23 +1161,25 @@ const actions = {
     addEntry(person, note, points);
   },
   delEntry: (d) => {
-    const e = state.entries.find((x) => x.id === d.id);
+    const e = state.v.entries.find((x) => x.id === d.id);
     if (!e || !confirm(`Remove ${e.points} pts for "${e.categoryName}"?`)) return;
     store.remove('entries', d.id);
-    const who = state.people.find((p) => p.id === e.personId)?.name || e.personName || '';
-    logIt(`Removed ${signed(Number(e.points) || 0)} ${e.categoryName} from ${who}`, 'del', e.weekId);
+    const who = state.v.people.find((p) => p.id === e.personId)?.name || e.personName || '';
+    logIt(`Removed ${signed(Number(e.points) || 0)} ${e.categoryName} from ${who}`, 'del', e.weekId, roomById(e.roomId));
   },
   undo: () => {},
   toggleAtt: (d) => {
     const id = `${state.week}_${d.id}`;
-    const person = state.people.find((p) => p.id === d.id);
-    if (state.attendance.some((a) => a.id === id)) {
+    const person = state.v.people.find((p) => p.id === d.id);
+    if (!person) return;
+    const room = roomById(person.roomId);
+    if (state.v.attendance.some((a) => a.id === id)) {
       store.remove('attendance', id);
-      logIt(`Unmarked ${person?.name || ''} as here`, 'del');
+      logIt(`Unmarked ${person.name} as here`, 'del', state.week, room);
     } else {
-      store.set('attendance', id, { roomId: state.roomId, weekId: state.week, personId: d.id, personName: person?.name || '',
-        points: attendancePoints(), leaderName: me()?.name || '', ts: Date.now() });
-      logIt(`Marked ${person?.name || ''} here (${signed(attendancePoints())})`, 'add');
+      store.set('attendance', id, { roomId: room.id, weekId: state.week, personId: d.id, personName: person.name,
+        points: attendancePoints(room), leaderName: me()?.name || '', ts: Date.now() });
+      logIt(`Marked ${person.name} here (${signed(attendancePoints(room))})`, 'add', state.week, room);
       navigator.vibrate?.(15);
     }
   },
@@ -1462,7 +1571,7 @@ function mergePanelHtml() {
     <div class="merge">
       <p><strong>Merge ${esc(from.name)}</strong> (${t.get(from.id)?.pts ?? 0} pts) into which kid?</p>
       <p class="muted small">All of ${esc(from.name)}'s points and attendance move to the kid you pick, then ${esc(from.name)} is removed.</p>
-      <div class="chips">${people().filter((p) => p.id !== from.id).map((p) =>
+      <div class="chips">${roomPeople().filter((p) => p.id !== from.id).map((p) =>
         `<button class="chip" data-act="mergeInto" data-id="${p.id}">${esc(listName(p.name))} <b>${t.get(p.id)?.pts ?? 0}</b></button>`).join('')}</div>
       <button class="ghost wide" data-act="mergeCancel">Cancel</button>
     </div>`;
@@ -1690,9 +1799,22 @@ app.addEventListener('submit', async (e) => {
   if (form.isConnected && ok !== false && form.dataset.form !== 'signin') form.reset();
   render();
 });
+// Remember whether the Rooms picker is open, so re-drawing the page doesn't snap it shut.
+app.addEventListener('toggle', (e) => {
+  if (e.target.classList?.contains('room-multi')) state.roomPickOpen = e.target.open;
+}, true);
 app.addEventListener('change', (e) => {
   const el = e.target;
   if (el.dataset.role === 'room') { setRoom(el.value); render(); return; }
+  if (el.dataset.role === 'viewRoom') {
+    const ids = new Set(state.viewIds);
+    if (el.checked) ids.add(el.value); else ids.delete(el.value);
+    if (!ids.size) { el.checked = true; toast('Keep at least one room checked.'); return; }
+    setView([...ids]); render(); return;
+  }
+  if (el.dataset.role === 'viewAll') {
+    setView(el.checked ? roomsHere().map((r) => r.id) : [state.roomId || roomsHere()[0]?.id]); render(); return;
+  }
   if (el.dataset.role === 'loc') { setLoc(el.value); render(); return; }
   if (el.dataset.role === 'logRoom') { state.logRoom = el.value; render(); return; }
   if (el.dataset.role === 'boardYear') { state.boardYear = el.value; render(); return; }

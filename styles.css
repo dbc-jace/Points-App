@@ -188,3 +188,18 @@ select { width: 100%; padding: 12px; border: 1px solid var(--line); border-radiu
 .sortbar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin: 0 0 10px; font-size: .85rem; color: var(--muted); }
 .seg.mini { margin: 0; padding: 2px; }
 .seg.mini button { padding: 5px 10px; font-size: .8rem; }
+
+/* Rooms picker (check several rooms) */
+.room-multi { background: var(--card); border-radius: var(--radius); margin-bottom: 10px; }
+.room-multi summary { list-style: none; display: flex; align-items: center; gap: 10px; padding: 12px 14px; font-weight: 600; cursor: pointer; }
+.room-multi summary::-webkit-details-marker { display: none; }
+.room-multi summary b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--accent-soft); padding: 6px 10px; border-radius: 8px; }
+.room-multi summary i { font-style: normal; color: var(--muted); transition: transform .15s; }
+.room-multi[open] summary i { transform: rotate(180deg); }
+.room-multi-list { display: grid; gap: 2px; padding: 0 14px 12px; }
+.room-multi-list .check { margin: 6px 0; }
+.room-multi-list .check.all { border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.room-multi-list button { margin-top: 8px; }
+.group-head { margin: 16px 4px 6px; font-size: .95rem; }
+.group-head small { color: var(--muted); font-weight: 500; }
+.person-head small.muted { display: block; }
