@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.18-8';
+import { createStore, newId } from './store.js?v=2026.11.18-9';
 
-const APP_VERSION = '2026.11.18-8';
+const APP_VERSION = '2026.11.18-9';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -880,10 +880,10 @@ function viewSettings() {
       </form>`}`)}
 
     ${fold('backup', 'Backup', '', `
-      <button class="ghost wide" data-act="export">Download this room's points (CSV)</button>
-      <button class="ghost wide" data-act="exportAll">${isOwner() ? 'Download everything: all locations &amp; rooms (CSV)'
-        : `Download everything in ${esc(locations().filter((x) => adminOf(x.id)).map((x) => x.name).join(' & '))} (CSV)`}</button>
-      <p class="muted small">One file with every kid, point category, point, and attendance mark${isOwner() ? '' : ' in the locations you run'}. Opens in Excel or Google Sheets.</p>`)}
+      <button class="ghost wide" data-act="export">Download this room (Excel)</button>
+      <button class="ghost wide" data-act="exportAll">${isOwner() ? 'Download everything: all locations &amp; rooms (Excel)'
+        : `Download everything in ${esc(locations().filter((x) => adminOf(x.id)).map((x) => x.name).join(' & '))} (Excel)`}</button>
+      <p class="muted small">A tab for each location${isOwner() ? '' : ' you run'}, with each room listed down the page: every kid's total points, times here, and points in each category (all time). Opens in Excel or Google Sheets.</p>`)}
     ${footer}`;
 }
 
@@ -1173,56 +1173,97 @@ const actions = {
     logIt(`Imported ${p.categories.length} categories, ${p.kids.length} kids, ${marks} attendance marks`, 'add', nowWeek());
     state.importPreview = null;
   },
-  // One CSV for every location and room this person runs (the owner gets everything).
+  // One Excel file: a tab per location, each room a section with every kid's totals by category.
   exportAll: async () => {
-    toast('Building the file…');
-    const head = ['Location', 'Room', 'Record', 'Week starting', 'Kid', 'Category', 'Points', 'Times attended', 'Entered by', 'Time'];
-    const rows = [];
-    const locName = (id) => state.locations.find((l) => l.id === id)?.name || '';
-    const rooms = [...state.rooms].filter((r) => adminOf(r.locationId))
-      .sort((a, b) => locName(a.locationId).localeCompare(locName(b.locationId)) || byOrder(a, b));
-    try {
-      for (const r of rooms) {
-        const [ppl, cats, ents, atts] = await Promise.all(ROOM_COLS.map((c) => store.getWhere(c, 'roomId', r.id)));
-        const L = locName(r.locationId);
-        const kid = (id, fallback) => ppl.find((p) => p.id === id)?.name || fallback || '';
-        const total = new Map(ppl.map((p) => [p.id, { pts: 0, att: 0 }]));
-        for (const e of ents) if (total.has(e.personId)) total.get(e.personId).pts += Number(e.points) || 0;
-        for (const a of atts) if (total.has(a.personId)) { const t = total.get(a.personId); t.pts += Number(a.points) || 0; t.att++; }
-        for (const p of [...ppl].sort(byName)) rows.push([L, r.name, 'Kid (all-time total)', '', p.name, '', total.get(p.id).pts, total.get(p.id).att, '', '']);
-        for (const c of [...cats].sort(byOrder)) rows.push([L, r.name, 'Point category', '', '', c.name, Number(c.points) || 0, '', '', '']);
-        rows.push([L, r.name, 'Attendance points', '', '', '', Number(r.attendancePoints ?? 10), '', '', '']);
-        const dated = [
-          ...ents.map((e) => [L, r.name, e.weekId === CARRYOVER ? 'Starting total' : 'Points', e.weekId === CARRYOVER ? '' : e.weekId,
-            kid(e.personId, e.personName), e.categoryName || '', Number(e.points) || 0, '', e.leaderName || '', e.ts ? new Date(e.ts).toLocaleString() : '']),
-          ...atts.map((a) => [L, r.name, 'Attendance', a.weekId, kid(a.personId, a.personName), '', Number(a.points) || 0, '', a.leaderName || '', a.ts ? new Date(a.ts).toLocaleString() : '']),
-        ].sort((x, y) => String(x[3]).localeCompare(String(y[3])) || String(x[4]).localeCompare(String(y[4])));
-        rows.push(...dated);
-      }
-    } catch (e) {
-      console.error(e);
-      return alert('Could not build the file. Check your connection and try again.');
-    }
-    const csv = [head, ...rows].map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }));
-    a.download = `${isOwner() ? 'all-locations' : 'my-locations'}-${ymd(new Date())}.csv`;
-    a.click();
-    toast(`Downloaded ${rooms.length} room${rooms.length === 1 ? '' : 's'}.`);
+    const locs = locations().filter((l) => adminOf(l.id));
+    await downloadWorkbook(locs.map((l) => ({ name: l.name, rooms: roomsIn(l.id) })),
+      `${isOwner() ? 'all-locations' : 'my-locations'}-${ymd(new Date())}.xlsx`);
   },
-  export: () => {
-    const rows = [['Week starting', 'Person', 'Category', 'Points', 'Entered by', 'Time']];
-    const name = (id, fallback) => state.people.find((p) => p.id === id)?.name || fallback || '';
-    for (const e of state.entries) rows.push([e.weekId, name(e.personId, e.personName), e.categoryName, e.points, e.leaderName, new Date(e.ts).toLocaleString()]);
-    for (const a of state.attendance) rows.push([a.weekId, name(a.personId, a.personName), 'Attendance', a.points, a.leaderName, new Date(a.ts).toLocaleString()]);
-    rows.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-    const csv = rows.map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-    a.download = `${slug(roomLabel(currentRoom()))}-points-${ymd(new Date())}.csv`;
-    a.click();
+  export: async () => {
+    const r = currentRoom();
+    if (!r) return;
+    await downloadWorkbook([{ name: r.name, rooms: [r] }], `${slug(roomLabel(r))}-${ymd(new Date())}.xlsx`);
   },
 };
+
+/* ---------- Excel export ---------- */
+let excelLib = null;
+const loadExcel = () => (excelLib ??= new Promise((resolve, reject) => {
+  const el = document.createElement('script');
+  el.src = 'https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js';
+  el.onload = () => resolve(window.ExcelJS);
+  el.onerror = () => { excelLib = null; reject(new Error('Could not load the Excel maker.')); };
+  document.head.appendChild(el);
+}));
+const sheetName = (name, used) => {
+  let n = String(name).replace(/[\\/?*[\]:]/g, '-').slice(0, 31) || 'Sheet';
+  for (let i = 2; used.has(n); i++) n = `${String(name).slice(0, 27)} (${i})`;
+  used.add(n);
+  return n;
+};
+// One row per kid: total, times attended, then points earned in each category (all time).
+async function addRoomSection(ws, room) {
+  const [ppl, cats, ents, atts] = await Promise.all(ROOM_COLS.map((c) => store.getWhere(c, 'roomId', room.id)));
+  const catList = [...cats].sort(byOrder);
+  const byCat = new Map(catList.map((c) => [c.id, c]));
+  const byCatName = new Map(catList.map((c) => [norm(c.name), c]));
+  const hasStart = ents.some((e) => e.weekId === CARRYOVER);
+  const hasOther = ents.some((e) => e.weekId !== CARRYOVER && !byCat.get(e.categoryId) && !byCatName.get(norm(e.categoryName || '')));
+  const cols = ['Kid', 'Total points', 'Times here', 'Attendance pts',
+    ...(hasStart ? ['Starting total'] : []), ...catList.map((c) => c.name), ...(hasOther ? ['Other'] : [])];
+
+  const title = ws.addRow([room.name]);
+  title.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+  title.eachCell((c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF305496' } }; });
+  ws.mergeCells(title.number, 1, title.number, cols.length);
+  const head = ws.addRow(cols);
+  head.font = { bold: true };
+  head.eachCell((c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } }; });
+
+  const rows = new Map(ppl.map((p) => [p.id, { name: p.name, total: 0, here: 0, att: 0, start: 0, other: 0, cat: new Map() }]));
+  for (const a of atts) { const r = rows.get(a.personId); if (r) { r.here++; r.att += Number(a.points) || 0; r.total += Number(a.points) || 0; } }
+  for (const e of ents) {
+    const r = rows.get(e.personId);
+    if (!r) continue;
+    const pts = Number(e.points) || 0;
+    r.total += pts;
+    if (e.weekId === CARRYOVER) { r.start += pts; continue; }
+    const c = byCat.get(e.categoryId) || byCatName.get(norm(e.categoryName || ''));
+    if (c) r.cat.set(c.id, (r.cat.get(c.id) || 0) + pts); else r.other += pts;
+  }
+  const list = [...rows.values()].sort((x, y) => y.total - x.total || x.name.localeCompare(y.name));
+  for (const r of list) {
+    ws.addRow([r.name, r.total, r.here, r.att, ...(hasStart ? [r.start] : []), ...catList.map((c) => r.cat.get(c.id) || 0), ...(hasOther ? [r.other] : [])]);
+  }
+  if (!list.length) ws.addRow(['No kids yet']).font = { italic: true, color: { argb: 'FF888888' } };
+  ws.addRow([]);
+  return cols.length;
+}
+async function downloadWorkbook(tabs, filename) {
+  toast('Building the file…');
+  try {
+    const ExcelJS = await loadExcel();
+    const wb = new ExcelJS.Workbook();
+    const used = new Set();
+    for (const t of tabs) {
+      const ws = wb.addWorksheet(sheetName(t.name, used));
+      let width = 4;
+      for (const r of t.rooms) width = Math.max(width, await addRoomSection(ws, r));
+      if (!t.rooms.length) ws.addRow(['No rooms yet']);
+      ws.getColumn(1).width = 28;
+      for (let i = 2; i <= width; i++) ws.getColumn(i).width = 14;
+    }
+    const buf = await wb.xlsx.writeBuffer();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    a.download = filename;
+    a.click();
+    toast('Downloaded.');
+  } catch (e) {
+    console.error(e);
+    alert('Could not build the file. Check your connection and try again.');
+  }
+}
 
 /* ---------- import ---------- */
 const CARRYOVER = 'carryover';
