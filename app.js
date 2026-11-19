@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.19-2';
+import { createStore, newId } from './store.js?v=2026.11.19-4';
 
-const APP_VERSION = '2026.11.19-2';
+const APP_VERSION = '2026.11.19-4';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -14,7 +14,23 @@ const bannerEl = document.getElementById('banner');
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const byName = (a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' });
+// Names sort by first or last name. Each person's choice is saved on their account (and on this device).
+const cmp = (x, y) => String(x).localeCompare(String(y), undefined, { sensitivity: 'base' });
+const lastNameOf = (name) => {
+  const w = String(name || '').trim().split(/\s+/).filter((x) => !/^(jr|sr|ii|iii|iv)\.?$/i.test(x));
+  return w.length > 1 ? w[w.length - 1] : w[0] || '';
+};
+const sortMode = () => {
+  const mine = state.user ? me()?.sort : null;
+  if (mine === 'first' || mine === 'last') return mine;
+  try { return localStorage.getItem('hgui_sort') === 'last' ? 'last' : 'first'; } catch { return 'first'; }
+};
+const byName = (a, b) => (sortMode() === 'last' ? cmp(lastNameOf(a.name), lastNameOf(b.name)) : 0) || cmp(a.name, b.name);
+const sortToggle = () => `
+  <div class="sortbar"><span>Sort by</span>
+    <div class="seg mini">${[['first', 'First name'], ['last', 'Last name']].map(([v, label]) =>
+      `<button class="${sortMode() === v ? 'on' : ''}" data-act="sortNames" data-v="${v}">${label}</button>`).join('')}</div>
+  </div>`;
 const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0) || byName(a, b);
 const norm = (s) => String(s).trim().toLowerCase().replace(/\s+/g, ' ');
 const normUser = (s) => String(s || '').trim().toLowerCase();
@@ -57,6 +73,7 @@ const state = {
   ownerEmail: null,  // the one "master" account (whoever set the app up)
   locId: (() => { try { return localStorage.getItem('hgui_loc'); } catch { return null; } })(),
   log: null, logKey: '', logWeek: weekStart(new Date()), logRoom: '',
+  attWeek: weekStart(new Date()), locAtt: null, locAttKey: '',
   someRooms: new Set(), // "leaderId|locId" where "Only some rooms" is picked but nothing checked yet
 };
 let store;
@@ -315,6 +332,7 @@ function viewPoints() {
       <button class="primary wide" data-act="tab" data-tab="attendance">Go to Attendance</button>`;
   }
   return `${toggle}
+    ${sortToggle()}
     <ul class="kid-rows">
       ${ppl.map((p) => `<li><button data-act="pickPerson" data-id="${p.id}">
         <span class="name">${esc(p.name)}${state.showAllKids && !here.has(p.id) ? '<small>not marked here</small>' : ''}</span>
@@ -356,6 +374,7 @@ function viewAttendance() {
   const count = ppl.filter((p) => here.has(p.id)).length;
   return `
     <p class="center"><strong>${count} of ${ppl.length}</strong> here · +${attendancePoints()} pts each</p>
+    ${sortToggle()}
     <ul class="att">
       ${ppl.map((p) => `<li><button class="${here.has(p.id) ? 'on' : ''}" data-act="toggleAtt" data-id="${p.id}"><span class="box">${here.has(p.id) ? '✓' : ''}</span>${esc(p.name)}</button></li>`).join('')}
     </ul>`;
@@ -680,6 +699,39 @@ async function eraseIn(loc, what) {
 }
 
 /* ---------- activity log (admins, one location + one week at a time) ---------- */
+/* ---------- attendance count for a whole location (admins) ---------- */
+let locAttUnsubs = [];
+function watchLocAtt(loc) {
+  const rooms = roomsIn(loc.id);
+  const key = `${loc.id}|${state.attWeek}|${rooms.map((r) => r.id).join(',')}`;
+  if (state.locAttKey === key) return;
+  locAttUnsubs.forEach((u) => u?.());
+  state.locAttKey = key;
+  state.locAtt = {};
+  locAttUnsubs = rooms.map((r) => store.watchWhere2('attendance', [['roomId', r.id], ['weekId', state.attWeek]], (docs) => {
+    if (state.locAttKey !== key) return;
+    state.locAtt[r.id] = new Set(docs.map((d) => d.personId)).size;
+    softRender();
+  }));
+}
+function locAttHtml(loc) {
+  watchLocAtt(loc);
+  const rooms = roomsIn(loc.id);
+  const ready = rooms.every((r) => state.locAtt?.[r.id] !== undefined);
+  const total = ready ? rooms.reduce((n, r) => n + state.locAtt[r.id], 0) : '…';
+  const thisWeek = state.attWeek === weekStart(new Date());
+  return fold('locAtt', `Here ${thisWeek ? 'this week' : `week of ${esc(weekLabel(state.attWeek))}`} · all of ${esc(loc.name)}`, total, `
+    <nav class="week">
+      <button data-act="attWeek" data-n="-1" aria-label="Previous week">◀</button>
+      <div><strong>Week of ${weekLabel(state.attWeek)}</strong>
+        ${thisWeek ? '<small>This week</small>' : '<button class="link small" data-act="attThisWeek">Jump to this week</button>'}</div>
+      <button data-act="attWeek" data-n="1" aria-label="Next week">▶</button>
+    </nav>
+    <ul class="edit">${rooms.map((r) => `<li><span class="grow">${esc(r.name)}</span><b>${state.locAtt?.[r.id] ?? '…'}</b></li>`).join('')
+      || '<li class="muted small">No rooms yet.</li>'}
+      ${rooms.length ? `<li><span class="grow"><b>Total</b></span><b>${total}</b></li>` : ''}</ul>`);
+}
+
 let logUnsub = null;
 function watchLog(loc) {
   const key = `${loc.id}|${state.logWeek}`;
@@ -787,6 +839,7 @@ function viewSettings() {
   const leadersHtml = `
     <p class="muted small">People with access to <b>${esc(loc.name)}</b>.${myLocations().length > 1 ? ' Switch locations at the top for the others.' : ''}
       ${isOwner() ? '' : ' Only the owner can add or change admins.'}</p>
+    ${sortToggle()}
     <ul class="leaders">
       ${leaders.map((l) => {
         const editing = state.leaderEdit === l.id && canEditLeader(l);
@@ -827,6 +880,7 @@ function viewSettings() {
 
   const head = `
     ${locPicker}
+    ${locAttHtml(loc)}
     ${fold('rooms', `${esc(loc.name)} rooms`, locRooms.length, roomsHtml)}
     ${fold('leaders', 'Leaders', leaders.filter((l) => hasAccessIn(l, loc)).length, leadersHtml)}
     ${fold('bulk', 'Add many leaders', '', bulkHtml(loc))}
@@ -853,6 +907,7 @@ function viewSettings() {
       <form data-form="addPerson" class="row">
         <input name="name" placeholder="Name" required><button class="primary">Add</button>
       </form>
+      ${sortToggle()}
       <ul class="edit">
         ${people().map((p) => `<li>
           <input value="${esc(p.name)}" data-col="people" data-id="${p.id}" data-field="name" aria-label="Name">
@@ -896,7 +951,7 @@ function viewSettings() {
       <button class="ghost wide" data-act="exportAll">${isOwner() ? 'Download everything: all locations &amp; rooms (Excel)'
         : `Download everything in ${esc(locations().filter((x) => adminOf(x.id)).map((x) => x.name).join(' & '))} (Excel)`}</button>
       <button class="ghost wide" data-act="exportAllTime">Download all-time points for ${esc(loc.name)} (CSV)</button>
-      <p class="muted small">A tab for each location${isOwner() ? '' : ' you run'}, with each room listed down the page: every kid's total points, times here, and points in each category (all time). Opens in Excel or Google Sheets.</p>`)}
+      <p class="muted small">A tab for each location${isOwner() ? '' : ' you run'}, with each room listed down the page: every kid's total points, times here, and points in each category (all time), plus a total for each room. Each location also gets an attendance tab: how many kids were there each week, by room. Opens in Excel or Google Sheets.</p>`)}
     ${footer}`;
 }
 
@@ -1026,12 +1081,20 @@ const actions = {
     try { localStorage.setItem(UI_KEY, JSON.stringify([...openSections])); } catch { /* ignore */ }
   },
   setAllKids: (d) => { state.showAllKids = d.v === '1'; },
+  sortNames: (d) => {
+    const v = d.v === 'last' ? 'last' : 'first';
+    try { localStorage.setItem('hgui_sort', v); } catch {}
+    const l = me();
+    if (l) store.update('leaders', l.id, { sort: v });
+  },
   theme: (d) => {
     try { if (d.v === 'auto') localStorage.removeItem('hgui_theme'); else localStorage.setItem('hgui_theme', d.v); } catch { /* ignore */ }
     if (d.v === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = d.v;
   },
   logWeek: (d) => { state.logWeek = shiftWeek(state.logWeek, Number(d.n)); },
   logThisWeek: () => { state.logWeek = weekStart(new Date()); },
+  attWeek: (d) => { state.attWeek = shiftWeek(state.attWeek, Number(d.n)); },
+  attThisWeek: () => { state.attWeek = weekStart(new Date()); },
 
   // rooms & locations
   delLocation: (d) => {
@@ -1273,8 +1336,43 @@ async function addRoomSection(ws, room) {
     ws.addRow([r.name, r.total, r.here, r.att, ...(hasStart ? [r.start] : []), ...catList.map((c) => r.cat.get(c.id) || 0), ...(hasOther ? [r.other] : [])]);
   }
   if (!list.length) ws.addRow(['No kids yet']).font = { italic: true, color: { argb: 'FF888888' } };
+  else {
+    const sum = (f) => list.reduce((n, r) => n + f(r), 0);
+    const tot = ws.addRow([`Room total (${list.length} kids)`, sum((r) => r.total), sum((r) => r.here), sum((r) => r.att),
+      ...(hasStart ? [sum((r) => r.start)] : []), ...catList.map((c) => sum((r) => r.cat.get(c.id) || 0)), ...(hasOther ? [sum((r) => r.other)] : [])]);
+    tot.font = { bold: true };
+    tot.eachCell((c) => { c.border = { top: { style: 'thin' } }; });
+  }
   ws.addRow([]);
-  return cols.length;
+  return { width: cols.length, atts };
+}
+// How many kids were there each week: a row per week, a column per room, and a total.
+function addAttendanceSheet(ws, attByRoom) {
+  const counts = attByRoom.map(([, atts]) => {
+    const m = new Map();
+    for (const a of atts) { if (!m.has(a.weekId)) m.set(a.weekId, new Set()); m.get(a.weekId).add(a.personId); }
+    return m;
+  });
+  const weeks = [...new Set(counts.flatMap((m) => [...m.keys()]))].filter((w) => /^\d{4}-\d{2}-\d{2}$/.test(w)).sort();
+  const multi = attByRoom.length > 1;
+  const head = ws.addRow(['Week of', ...attByRoom.map(([r]) => r.name), ...(multi ? ['Total'] : [])]);
+  head.font = { bold: true };
+  head.eachCell((c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } }; });
+  const sums = attByRoom.map(() => 0);
+  for (const w of weeks) {
+    const n = counts.map((m) => m.get(w)?.size || 0);
+    n.forEach((x, i) => { sums[i] += x; });
+    ws.addRow([parseYmd(w).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }), ...n, ...(multi ? [n.reduce((a, b) => a + b, 0)] : [])]);
+  }
+  if (!weeks.length) ws.addRow(['No attendance yet']).font = { italic: true, color: { argb: 'FF888888' } };
+  else {
+    const tot = ws.addRow(['Total', ...sums, ...(multi ? [sums.reduce((a, b) => a + b, 0)] : [])]);
+    tot.font = { bold: true };
+    tot.eachCell((c) => { c.border = { top: { style: 'thin' } }; });
+  }
+  ws.views = [{ state: 'frozen', ySplit: 1, xSplit: 1 }];
+  ws.getColumn(1).width = 16;
+  for (let i = 2; i <= attByRoom.length + 2; i++) ws.getColumn(i).width = 16;
 }
 async function downloadWorkbook(tabs, filename) {
   toast('Building the file…');
@@ -1285,10 +1383,12 @@ async function downloadWorkbook(tabs, filename) {
     for (const t of tabs) {
       const ws = wb.addWorksheet(sheetName(t.name, used));
       let width = 4;
-      for (const r of t.rooms) width = Math.max(width, await addRoomSection(ws, r));
+      const attByRoom = [];
+      for (const r of t.rooms) { const res = await addRoomSection(ws, r); width = Math.max(width, res.width); attByRoom.push([r, res.atts]); }
       if (!t.rooms.length) ws.addRow(['No rooms yet']);
       ws.getColumn(1).width = 28;
       for (let i = 2; i <= width; i++) ws.getColumn(i).width = 14;
+      if (t.rooms.length) addAttendanceSheet(wb.addWorksheet(sheetName(`${t.name} attendance`, used)), attByRoom);
     }
     const buf = await wb.xlsx.writeBuffer();
     const a = document.createElement('a');

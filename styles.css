@@ -184,3 +184,7 @@ select { width: 100%; padding: 12px; border: 1px solid var(--line); border-radiu
 .seg.three { grid-template-columns: 1fr 1fr 1fr; }
 .preview .block, .leaders .block { display: block; }
 .danger.ghost { border-color: var(--danger); }
+
+.sortbar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin: 0 0 10px; font-size: .85rem; color: var(--muted); }
+.seg.mini { margin: 0; padding: 2px; }
+.seg.mini button { padding: 5px 10px; font-size: .8rem; }

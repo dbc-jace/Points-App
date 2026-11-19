@@ -94,9 +94,9 @@ service cloud.firestore {
       allow create: if isAdminFlag() && email != myEmail() && manageable(request.resource.data);
       allow update: if isAdminFlag() && email != myEmail() && adminEditOk(resource.data, request.resource.data);
       allow delete: if isAdminFlag() && email != myEmail() && manageable(resource.data);
-      // Everyone: may change their own username, nothing else.
+      // Everyone: may change their own username and name-sorting choice, nothing else.
       allow update: if signedIn() && email == myEmail()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['username']);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['username', 'sort']);
     }
 
     match /locations/{id} {
