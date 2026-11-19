@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.20-2';
+import { createStore, newId } from './store.js?v=2026.11.20-3';
 
-const APP_VERSION = '2026.11.20-2';
+const APP_VERSION = '2026.11.20-3';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -412,18 +412,17 @@ function renderNoAccess() {
     <button class="link" data-act="logout">Log out</button>`);
 }
 
-// Group a list by room (in room order) when more than one room is checked.
-function byRoomGroups(list, roomOfItem = (x) => x.roomId) {
-  return viewRooms().map((r) => ({ room: r, items: list.filter((x) => roomOfItem(x) === r.id) }));
-}
-const groupHead = (room, extra = '') => `<h3 class="group-head">${esc(room.name)}${extra ? ` <small>${extra}</small>` : ''}</h3>`;
+// Small room tag next to a name when more than one room is checked.
+const roomTag = (p) => (multiView() ? ` <em class="room-tag">${esc(roomById(p.roomId)?.name || '')}</em>` : '');
 
 function viewPoints() {
   const everyone = people();
   if (!everyone.length) return (!roomsLoaded() ? '<p class="center muted">Loading…</p>' : '') || emptyState(multiView() ? 'No kids in these rooms yet.' : 'No kids in this room yet.', adminOf(curLoc()?.id) ? 'Add kids in Settings.' : 'Ask an admin to add kids.');
   const t = totals(state.week);
   const here = new Set(state.v.attendance.filter((a) => a.weekId === state.week).map((a) => a.personId));
-  const ppl = state.showAllKids ? everyone : everyone.filter((p) => here.has(p.id));
+  // Points list is always in rank order (most points this week first), ties alphabetical.
+  const ppl = (state.showAllKids ? everyone : everyone.filter((p) => here.has(p.id)))
+    .sort((a, b) => t.get(b.id).pts - t.get(a.id).pts || byName(a, b));
   const person = everyone.find((p) => p.id === state.personId);
   if (person) return viewPerson(person, ppl, t);
 
@@ -440,12 +439,12 @@ function viewPoints() {
   }
   const rowsHtml = (list) => `<ul class="kid-rows">
       ${list.map((p) => `<li><button data-act="pickPerson" data-id="${p.id}">
-        <span class="name">${esc(listName(p.name))}${state.showAllKids && !here.has(p.id) ? '<small>not marked here</small>' : ''}</span>
+        <span class="name">${esc(listName(p.name))}${roomTag(p)}${state.showAllKids && !here.has(p.id) ? '<small>not marked here</small>' : ''}</span>
         <b>${t.get(p.id).pts}</b><span class="chev">›</span></button></li>`).join('')}
     </ul>`;
   return `${toggle}
     ${sortToggle()}
-    ${multiView() ? byRoomGroups(ppl).filter((g) => g.items.length).map((g) => groupHead(g.room) + rowsHtml(g.items)).join('') : rowsHtml(ppl)}`;
+    ${rowsHtml(ppl)}`;
 }
 
 function viewPerson(person, ppl, t) {
@@ -481,7 +480,7 @@ function viewAttendance() {
   const here = new Set(state.v.attendance.filter((a) => a.weekId === state.week).map((a) => a.personId));
   const count = ppl.filter((p) => here.has(p.id)).length;
   const listHtml = (list) => `<ul class="att">
-      ${list.map((p) => `<li><button class="${here.has(p.id) ? 'on' : ''}" data-act="toggleAtt" data-id="${p.id}"><span class="box">${here.has(p.id) ? '✓' : ''}</span>${esc(listName(p.name))}</button></li>`).join('')}
+      ${list.map((p) => `<li><button class="${here.has(p.id) ? 'on' : ''}" data-act="toggleAtt" data-id="${p.id}"><span class="box">${here.has(p.id) ? '✓' : ''}</span><span class="grow">${esc(listName(p.name))}</span>${roomTag(p)}</button></li>`).join('')}
     </ul>`;
   if (!multiView()) {
     return `
@@ -492,8 +491,8 @@ function viewAttendance() {
   return `
     <p class="center"><strong>${count} of ${ppl.length}</strong> here in ${viewRooms().length} rooms</p>
     ${sortToggle()}
-    ${byRoomGroups(ppl).map((g) => groupHead(g.room, `${g.items.filter((p) => here.has(p.id)).length} of ${g.items.length} here · +${attendancePoints(g.room)} pts`)
-      + (g.items.length ? listHtml(g.items) : `<p class="muted small">${roomReady(g.room.id) ? 'No kids yet.' : 'Loading…'}</p>`)).join('')}`;
+    <p class="center muted small">${viewRooms().map((r) => { const k = ppl.filter((p) => p.roomId === r.id); return `${esc(r.name)} ${k.filter((p) => here.has(p.id)).length}/${k.length}`; }).join(' · ')}</p>
+    ${listHtml(ppl)}`;
 }
 
 function viewBoard() {
@@ -514,7 +513,7 @@ function viewBoard() {
       ${list.map((r, i) => { if (r.pts !== prev) { rank = i + 1; prev = r.pts; } return `
         <li data-act="pickPerson" data-id="${r.p.id}" data-go="points">
           <span class="rank r${rank}">${rank}</span>
-          <span class="name">${esc(r.p.name)}<small>${r.att} attended</small></span>
+          <span class="name">${esc(r.p.name)}${roomTag(r.p)}<small>${r.att} attended</small></span>
           <b>${r.pts}</b>
         </li>`; }).join('')}
     </ol>`;
@@ -529,7 +528,6 @@ function viewBoard() {
       ${[...ys].reverse().map((y) => `<option value="${esc(y.id)}" ${y.id === range.id ? 'selected' : ''}>${esc(y.name)}</option>`).join('')}
     </select></label>` : ''}
     ${!rows.length ? (!roomsLoaded() ? '<p class="center muted">Loading…</p>' : '') || emptyState(multiView() ? 'No kids in these rooms yet.' : 'No kids in this room yet.', '')
-      : multiView() ? byRoomGroups(rows, (r) => r.p.roomId).filter((g) => g.items.length).map((g) => groupHead(g.room) + boardList(g.items)).join('')
       : boardList(rows)}`;
 }
 
