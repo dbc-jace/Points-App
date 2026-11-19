@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.19-5';
+import { createStore, newId } from './store.js?v=2026.11.19-6';
 
-const APP_VERSION = '2026.11.19-5';
+const APP_VERSION = '2026.11.19-6';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -23,6 +23,18 @@ const lastNameOf = (name) => {
   let i = w.length - 1;
   while (i > 1 && /^(de|del|della|der|den|di|da|du|van|von|la|le|st\.?|mc|mac)$/i.test(w[i - 1])) i--;
   return w.slice(i).join(' ');
+};
+// "Sam Akmakjian" → "Akmakjian, Sam" when sorting by last name (keeps Jr./Sr. with the last name).
+const listName = (name) => {
+  const full = String(name || '').trim();
+  if (sortMode() !== 'last') return full;
+  const w = full.split(/\s+/);
+  const suffix = w.filter((x) => /^(jr|sr|ii|iii|iv)\.?$/i.test(x));
+  const words = w.filter((x) => !suffix.includes(x));
+  const last = lastNameOf(full);
+  const n = last.split(' ').length;
+  if (words.length <= n) return full;
+  return `${[last, ...suffix].join(' ')}, ${words.slice(0, words.length - n).join(' ')}`;
 };
 const sortMode = () => {
   if (state.sortPick) return state.sortPick; // just tapped on this device: use it right away
@@ -340,7 +352,7 @@ function viewPoints() {
     ${sortToggle()}
     <ul class="kid-rows">
       ${ppl.map((p) => `<li><button data-act="pickPerson" data-id="${p.id}">
-        <span class="name">${esc(p.name)}${state.showAllKids && !here.has(p.id) ? '<small>not marked here</small>' : ''}</span>
+        <span class="name">${esc(listName(p.name))}${state.showAllKids && !here.has(p.id) ? '<small>not marked here</small>' : ''}</span>
         <b>${t.get(p.id).pts}</b><span class="chev">›</span></button></li>`).join('')}
     </ul>`;
 }
@@ -354,7 +366,7 @@ function viewPerson(person, ppl, t) {
   return `
     <div class="person-nav">
       <button class="link" data-act="backToList">‹ Back</button>
-      ${next ? `<button class="link" data-act="pickPerson" data-id="${next.id}">${esc(next.name)} ›</button>` : ''}
+      ${next ? `<button class="link" data-act="pickPerson" data-id="${next.id}">${esc(listName(next.name))} ›</button>` : ''}
     </div>
     <div class="person-head">
       <h2>${esc(person.name)}</h2>
@@ -381,7 +393,7 @@ function viewAttendance() {
     <p class="center"><strong>${count} of ${ppl.length}</strong> here · +${attendancePoints()} pts each</p>
     ${sortToggle()}
     <ul class="att">
-      ${ppl.map((p) => `<li><button class="${here.has(p.id) ? 'on' : ''}" data-act="toggleAtt" data-id="${p.id}"><span class="box">${here.has(p.id) ? '✓' : ''}</span>${esc(p.name)}</button></li>`).join('')}
+      ${ppl.map((p) => `<li><button class="${here.has(p.id) ? 'on' : ''}" data-act="toggleAtt" data-id="${p.id}"><span class="box">${here.has(p.id) ? '✓' : ''}</span>${esc(listName(p.name))}</button></li>`).join('')}
     </ul>`;
 }
 
@@ -851,7 +863,7 @@ function viewSettings() {
         const self = l.id === state.user.email;
         return `<li>
           <div class="row">
-            <span class="grow"><b>${esc(l.name)}</b> <em class="badge">${roleOf(l)}</em>${self ? ' <small class="muted">you</small>' : ''}
+            <span class="grow"><b>${esc(listName(l.name))}</b> <em class="badge">${roleOf(l)}</em>${self ? ' <small class="muted">you</small>' : ''}
               <small class="email">Username: ${esc(usernameOf(l))}</small><small class="email">${unassigned(l) ? 'Not in any location yet' : esc(accessIn(l, loc))}</small></span>
             ${canEditLeader(l) ? `<button class="ghost small" data-act="editLeader" data-id="${esc(l.id)}">${editing ? 'Done' : 'Edit'}</button>` : ''}
           </div>
@@ -1451,7 +1463,7 @@ function mergePanelHtml() {
       <p><strong>Merge ${esc(from.name)}</strong> (${t.get(from.id)?.pts ?? 0} pts) into which kid?</p>
       <p class="muted small">All of ${esc(from.name)}'s points and attendance move to the kid you pick, then ${esc(from.name)} is removed.</p>
       <div class="chips">${people().filter((p) => p.id !== from.id).map((p) =>
-        `<button class="chip" data-act="mergeInto" data-id="${p.id}">${esc(p.name)} <b>${t.get(p.id)?.pts ?? 0}</b></button>`).join('')}</div>
+        `<button class="chip" data-act="mergeInto" data-id="${p.id}">${esc(listName(p.name))} <b>${t.get(p.id)?.pts ?? 0}</b></button>`).join('')}</div>
       <button class="ghost wide" data-act="mergeCancel">Cancel</button>
     </div>`;
 }
