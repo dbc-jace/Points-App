@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.18-6';
+import { createStore, newId } from './store.js?v=2026.11.18-8';
 
-const APP_VERSION = '2026.11.18-6';
+const APP_VERSION = '2026.11.18-8';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -103,10 +103,28 @@ const categories = () => [...state.categories].sort(byOrder);
 const usernameOf = (l) => l.username || l.id;
 const roomLabel = (r) => `${locationOf(r)?.name ? locationOf(r).name + ' · ' : ''}${r.name}`;
 
-function totals(weekId) {
+// School years: each location keeps a list of { id, name, start (week id) }. A year runs until the next one starts.
+// Nothing is deleted when a new year starts; the Board just counts from the new start.
+const effWeek = (x) => (x.weekId === CARRYOVER ? weekStart(new Date(x.ts || 0)) : x.weekId); // starting totals count in the week they were imported
+const yearsOf = (loc) => [...(loc?.years || [])].sort((a, b) => String(a.start).localeCompare(String(b.start)));
+function yearRange(loc, id) {
+  const ys = yearsOf(loc);
+  const i = ys.findIndex((y) => y.id === id);
+  return i < 0 ? null : { ...ys[i], end: ys[i + 1]?.start || null };
+}
+const currentYear = (loc) => [...yearsOf(loc)].reverse().find((y) => y.start <= weekStart(new Date())) || yearsOf(loc)[0] || null;
+
+// weekId = one week; range = { start, end } (a school year); neither = all time.
+function totals(weekId, range = null) {
   const t = new Map(state.people.map((p) => [p.id, { pts: 0, att: 0 }]));
-  for (const e of state.entries) if ((!weekId || e.weekId === weekId) && t.has(e.personId)) t.get(e.personId).pts += Number(e.points) || 0;
-  for (const a of state.attendance) if ((!weekId || a.weekId === weekId) && t.has(a.personId)) { const r = t.get(a.personId); r.pts += Number(a.points) || 0; r.att++; }
+  const ok = (x) => {
+    if (weekId) return x.weekId === weekId;
+    if (!range) return true;
+    const w = effWeek(x);
+    return w >= range.start && (!range.end || w < range.end);
+  };
+  for (const e of state.entries) if (ok(e) && t.has(e.personId)) t.get(e.personId).pts += Number(e.points) || 0;
+  for (const a of state.attendance) if (ok(a) && t.has(a.personId)) { const r = t.get(a.personId); r.pts += Number(a.points) || 0; r.att++; }
   return t;
 }
 
@@ -203,7 +221,7 @@ function render() {
   }
   // No rooms here yet (an admin's new location): only Settings makes sense.
   if (!state.roomId) state.tab = 'settings';
-  const showWeek = state.tab !== 'settings' && !(state.tab === 'board' && state.board === 'all');
+  const showWeek = state.tab !== 'settings' && !(state.tab === 'board' && state.board !== 'week');
   const isThisWeek = state.week === weekStart(new Date());
   const room = currentRoom();
 
@@ -337,14 +355,26 @@ function viewAttendance() {
 }
 
 function viewBoard() {
-  const t = totals(state.board === 'week' ? state.week : null);
+  const loc = curLoc();
+  const ys = yearsOf(loc);
+  const mode = state.board === 'year' && !ys.length ? 'all' : state.board;
+  let range = null;
+  if (mode === 'year') {
+    const yid = ys.some((y) => y.id === state.boardYear) ? state.boardYear : currentYear(loc).id;
+    range = yearRange(loc, yid);
+  }
+  const t = totals(mode === 'week' ? state.week : null, range);
   const rows = people().map((p) => ({ p, ...t.get(p.id) })).sort((a, b) => b.pts - a.pts || byName(a.p, b.p));
   let rank = 0, prev = null;
   return `
-    <div class="seg">
-      <button class="${state.board === 'week' ? 'on' : ''}" data-act="board" data-v="week">This week</button>
-      <button class="${state.board === 'all' ? 'on' : ''}" data-act="board" data-v="all">All time</button>
+    <div class="seg ${ys.length ? 'three' : ''}">
+      <button class="${mode === 'week' ? 'on' : ''}" data-act="board" data-v="week">This week</button>
+      ${ys.length ? `<button class="${mode === 'year' ? 'on' : ''}" data-act="board" data-v="year">${esc(range && mode === 'year' ? range.name : currentYear(loc).name)}</button>` : ''}
+      <button class="${mode === 'all' ? 'on' : ''}" data-act="board" data-v="all">All time</button>
     </div>
+    ${mode === 'year' && ys.length > 1 ? `<label class="room-pick wide-pick"><span>Year</span><select data-role="boardYear" aria-label="Year">
+      ${[...ys].reverse().map((y) => `<option value="${esc(y.id)}" ${y.id === range.id ? 'selected' : ''}>${esc(y.name)}</option>`).join('')}
+    </select></label>` : ''}
     ${!rows.length ? emptyState('No kids in this room yet.', '') : `<ol class="board">
       ${rows.map((r, i) => { if (r.pts !== prev) { rank = i + 1; prev = r.pts; } return `
         <li data-act="pickPerson" data-id="${r.p.id}" data-go="points">
@@ -362,6 +392,7 @@ function isOpen(k) {
   if (k === 'people' && state.mergeFrom) return true;
   if (k === 'import' && state.importPreview) return true;
   if (k === 'leaders' && state.leaderEdit) return true;
+  if (k === 'bulk' && (state.bulk || state.bulkResult || state.bulkBusy)) return true;
   return openSections.has(k);
 }
 const fold = (key, title, count, inner) => `
@@ -414,8 +445,227 @@ const leaderInsideMine = (l) => {
   const roomLocs = (l.rooms || []).map((id) => state.rooms.find((r) => r.id === id)?.locationId).filter(Boolean);
   return [...leaderLocs(l), ...roomLocs].every((id) => mine.includes(id));
 };
+// Not in any location (e.g. added with no access yet). Only the owner sees these, in every location's list.
+const unassigned = (l) => !isOwnerL(l) && !leaderLocs(l).length && !(l.rooms || []).some((id) => state.rooms.some((r) => r.id === id));
 const canEditLeader = (l) => l.id !== state.user.email && !isOwnerL(l) && (isOwner() || !l.admin);
 const canFullyManage = (l) => canEditLeader(l) && (isOwner() || leaderInsideMine(l));
+
+/* ---------- school years ---------- */
+function yearsHtml(loc) {
+  const ys = yearsOf(loc);
+  const cur = currentYear(loc);
+  return `
+    <p class="muted small">Starting a new year sets everyone's year total on the Board back to zero. Nothing is deleted: past years stay on the Board (pick the year there), and "All time" still adds up everything.</p>
+    ${ys.length ? `<ul class="edit">${[...ys].reverse().map((y) => `<li>
+        <span class="grow"><b>${esc(y.name)}</b>${cur && y.id === cur.id ? ' <em class="badge">current</em>' : ''}<small class="email">Starts week of ${esc(weekLabel(y.start))}</small></span>
+        <button class="x" data-act="delYear" data-id="${esc(y.id)}" data-name="${esc(y.name)}" aria-label="Delete year">✕</button>
+      </li>`).join('')}</ul>` : '<p class="small">No years yet, so the Board counts all time. Tip: add this year first, starting the week it began, so this year\'s points count toward it.</p>'}
+    <h3>${ys.length ? 'Start a new year' : 'Add a year'}</h3>
+    <form data-form="addYear" class="stack">
+      <input type="hidden" name="locationId" value="${esc(loc.id)}">
+      <input name="name" placeholder="Name (e.g. 2027–28)" required>
+      <label>Starts on<input name="start" type="date" required value="${ymd(new Date())}"></label>
+      <button class="primary wide">${ys.length ? 'Start new year' : 'Add year'}</button>
+    </form>`;
+}
+
+/* ---------- add many leaders at once ---------- */
+// "Ruth Herriman" -> rherriman / initials "rh". Words in (parentheses) are nicknames and skipped.
+const nameWords = (name) => String(name).replace(/\([^)]*\)/g, ' ').trim().split(/\s+/).filter(Boolean);
+const lettersOnly = (s) => s.toLowerCase().normalize('NFD').replace(/[^a-z0-9]/g, '');
+function autoUsername(name) {
+  const w = nameWords(name);
+  return w.length ? (lettersOnly(w[0])[0] || '') + lettersOnly(w.slice(1).join('')) : '';
+}
+function initialsOf(name) {
+  const w = nameWords(name).map(lettersOnly).filter(Boolean);
+  return w.length ? w[0][0] + (w.length > 1 ? w.slice(1).join('')[0] : '') : '';
+}
+
+function bulkHtml(loc) {
+  if (state.bulkBusy) return `<p class="center"><strong>Working… ${esc(state.bulkBusy)}</strong></p><p class="muted small center">Keep this page open until it finishes.</p>`;
+  if (state.bulkResult) {
+    const r = state.bulkResult;
+    return `
+      <p><strong>${r.filter((x) => x.ok).length} done</strong>${r.some((x) => !x.ok) ? ` · <strong class="danger">${r.filter((x) => !x.ok).length} not done</strong>` : ''}</p>
+      <ul class="preview">${r.map((x) => `<li><span>${esc(x.name)} <small class="muted">${esc(x.username)}</small>${x.ok ? '' : `<small class="danger block">${esc(x.msg)}</small>`}</span><b>${x.ok ? esc(x.msg) : '✕'}</b></li>`).join('')}</ul>
+      <button class="ghost wide" data-act="bulkClose">Done</button>`;
+  }
+  if (state.bulk) {
+    const rows = state.bulk.rows;
+    const bad = rows.filter((x) => x.error).length;
+    return `
+      <p><strong>${rows.length - bad}</strong> ready${bad ? ` · <strong class="danger">${bad} with problems (they'll be skipped)</strong>` : ''}</p>
+      <ul class="preview">${rows.map((x) => `<li><span><b>${esc(x.name)}</b> <em class="badge">${x.self ? 'you: username only' : x.existing ? 'update' : 'new'}</em>
+          <small class="block">${esc(x.username)}${x.self ? '' : ` · password ${esc(x.pw)}`} · ${esc(x.locName)}: ${esc(x.accessText)}</small>
+          ${x.error ? `<small class="danger block">${esc(x.error)}</small>` : ''}</span></li>`).join('')}</ul>
+      <p class="muted small">"Update" means they're already on the list: they get this username and password, and keep their current access plus anything new here.</p>
+      <div class="row">
+        <button class="ghost grow" data-act="bulkCancel">Back</button>
+        <button class="primary grow" data-act="bulkRun" ${rows.length - bad ? '' : 'disabled'}>Add / update ${rows.length - bad}</button>
+      </div>`;
+  }
+  return `
+    <p class="muted small">One person per line: <b>Name, username, access</b>. Access is <b>admin</b>${isOwner() ? '' : ' (owner only)'}, <b>all</b> (every room), one room name, or several separated by <b>;</b>. Leave access blank for no access yet. Leave the username blank to use first initial + last name.
+      ${isOwner() ? 'Lines go to this location; put a line like <b># Higher Ground</b> to switch locations partway.' : ''}</p>
+    <form data-form="bulkPreview" class="stack" autocomplete="off">
+      <textarea name="text" rows="10" required placeholder="Ruth Herriman, rherriman, Jr. High&#10;Kim Rende, krende, admin&#10;Jenna Christensen, , Sparks Blue; Sparks Green">${esc(state.bulkText || '')}</textarea>
+      <label>Password ending
+        <input name="suffix" required autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="e.g. awana">
+      </label>
+      <p class="muted small">Each password is the person's first + last initial, then this ending. Ruth Herriman + "awana" = rhawana.</p>
+      <button class="primary wide">Preview</button>
+    </form>`;
+}
+
+function parseBulk(text, suffix) {
+  const rows = [];
+  let loc = curLoc();
+  const seen = new Map();
+  for (const raw of String(text).split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('#')) {
+      const want = norm(line.slice(1));
+      const found = locations().find((x) => norm(x.name) === want);
+      if (found) loc = found; else rows.push({ name: line, username: '', error: `No location called "${line.slice(1).trim()}".` });
+      continue;
+    }
+    const [name = '', user = '', access = ''] = line.split(',').map((x) => x.trim());
+    const row = { name, username: normUser(user) || autoUsername(name), locId: loc.id, locName: loc.name, admin: false, all: false, rooms: [] };
+    row.pw = initialsOf(name) + suffix;
+    const err = (m) => { row.error = row.error || m; };
+    if (!name) err('No name.');
+    if (!/^[a-z0-9][a-z0-9._@+-]{1,59}$/.test(row.username)) err('Usernames can use letters, numbers, dots, dashes, and underscores.');
+    if (row.pw.length < 6) err('Password would be shorter than 6 characters. Use a longer ending.');
+    if (!adminOf(loc.id)) err(`You don't run ${loc.name}.`);
+    const parts = access.split(';').map((x) => x.trim()).filter(Boolean);
+    const names = [];
+    for (const a of parts) {
+      if (/^admin$/i.test(a)) { if (isOwner()) row.admin = true; else err('Only the owner can make admins.'); names.push('admin'); continue; }
+      if (/^all$/i.test(a)) { row.all = true; names.push('all rooms'); continue; }
+      const r = roomsIn(loc.id).find((x) => norm(x.name) === norm(a));
+      if (r) { row.rooms.push(r.id); names.push(r.name); } else err(`No room called "${a}" in ${loc.name}.`);
+    }
+    row.accessText = names.join(', ') || 'no access yet';
+    const matches = state.leaders.filter((l) => norm(l.name) === norm(name));
+    if (matches.length > 1) err(`More than one ${name} is already on the list.`);
+    row.existing = matches.length === 1 ? matches[0] : null;
+    row.self = row.existing?.id === state.user.email;
+    if (row.existing && !row.self && !canFullyManage(row.existing)) err("Only the owner can change this person's login.");
+    if (seen.has(row.username)) err(`Username "${row.username}" is used twice in this list.`);
+    seen.set(row.username, row);
+    rows.push(row);
+  }
+  // Usernames held by people who aren't in this list (or who are giving theirs up) are taken.
+  const leaving = new Set(rows.filter((r) => r.existing).map((r) => r.existing.id));
+  for (const r of rows) {
+    if (r.error) continue;
+    const holder = state.leaders.find((l) => usernameOf(l) === r.username);
+    if (holder && holder.id !== r.existing?.id && !leaving.has(holder.id)) r.error = `Username "${r.username}" is taken by ${holder.name}.`;
+  }
+  return rows;
+}
+
+// Give a leader a new login (username + password) and merge in the access from the list.
+async function bulkOne(r) {
+  const prev = r.existing;
+  const locs = new Set(leaderLocs(prev));
+  if (r.admin || r.all) locs.add(r.locId);
+  const rooms = new Set(prev?.rooms || []);
+  r.rooms.forEach((id) => rooms.add(id));
+  const admin = !!prev?.admin || r.admin;
+  const holder = await store.getDoc('usernames', r.username).catch(() => null);
+  if (holder && holder.authEmail !== prev?.id && state.leaders.some((l) => l.id === holder.authEmail)) throw new Error('That username is taken.');
+  if (r.self) {
+    if (usernameOf(prev) === r.username) return 'no change';
+    await store.batch([
+      { op: 'set', col: 'usernames', id: r.username, data: { authEmail: prev.id } },
+      { op: 'update', col: 'leaders', id: prev.id, data: { username: r.username } },
+      { op: 'delete', col: 'usernames', id: usernameOf(prev) },
+    ]);
+    return 'username changed';
+  }
+  const authEmail = loginEmailFor(r.username);
+  await store.createLogin(authEmail, r.pw);
+  const { id: _old, ...data } = prev || {};
+  const ops = [
+    { op: 'set', col: 'leaders', id: authEmail, data: { ...data, name: prev?.name || r.name, username: r.username, admin, locations: [...locs], rooms: [...rooms] } },
+    { op: 'set', col: 'usernames', id: r.username, data: { authEmail } },
+  ];
+  if (prev) {
+    ops.push({ op: 'delete', col: 'leaders', id: prev.id });
+    if (usernameOf(prev) !== r.username) ops.push({ op: 'delete', col: 'usernames', id: usernameOf(prev) });
+  }
+  await store.batch(ops);
+  return prev ? 'updated' : 'added';
+}
+
+/* ---------- erase everything of one kind in a location ---------- */
+const ERASE = {
+  points: ['Points', 'every point given (including starting totals) in every room. Kids and attendance stay'],
+  attendance: ['Attendance', 'every attendance mark in every room. Kids and points stay'],
+  kids: ['Kids', 'every kid, with their points and attendance, in every room'],
+  categories: ['Point categories', 'every point category in every room. Points already given stay'],
+  rooms: ['Rooms', 'every room, with all its kids, categories, points, and attendance'],
+  leaders: ['Leaders', 'everyone who only works here. People who also work in another location just lose access here'],
+  log: ['Activity log', 'the whole activity log'],
+};
+function eraseHtml(loc) {
+  const kinds = Object.keys(ERASE).filter((k) => k !== 'log' || isOwner());
+  return `
+    <p class="muted small">Deletes things in <b>${esc(loc.name)}</b> only. You'll be asked to type ERASE first. This can't be undone, so download a backup first if you might want it.</p>
+    ${kinds.map((k) => `<button class="ghost wide danger" data-act="erase" data-what="${k}">${k === 'log' ? 'Erase the activity log' : `Erase all ${ERASE[k][0].toLowerCase()}`} in ${esc(loc.name)}</button>`).join('')}`;
+}
+async function roomDocs(col, roomIds) {
+  const out = [];
+  for (const id of roomIds) out.push(...await store.getWhere(col, 'roomId', id));
+  return out;
+}
+const delOps = (col, docs) => docs.map((x) => ({ op: 'delete', col, id: x.id }));
+// Delete a room and everything in it (contents first, while the room still exists for the security rules).
+async function deleteRoomAll(r) {
+  const ops = [];
+  for (const c of ROOM_COLS) ops.push(...delOps(c, await roomDocs(c, [r.id])));
+  await store.batch(ops);
+  await store.batch([{ op: 'delete', col: 'rooms', id: r.id }]);
+  if (state.roomId === r.id) setRoom(null);
+}
+async function eraseIn(loc, what) {
+  const rooms = roomsIn(loc.id);
+  const ids = rooms.map((r) => r.id);
+  if (what === 'points') { const d = await roomDocs('entries', ids); await store.batch(delOps('entries', d)); return d.length; }
+  if (what === 'attendance') { const d = await roomDocs('attendance', ids); await store.batch(delOps('attendance', d)); return d.length; }
+  if (what === 'categories') { const d = await roomDocs('categories', ids); await store.batch(delOps('categories', d)); return d.length; }
+  if (what === 'kids') {
+    const ops = [...delOps('entries', await roomDocs('entries', ids)), ...delOps('attendance', await roomDocs('attendance', ids))];
+    const kids = await roomDocs('people', ids);
+    await store.batch([...ops, ...delOps('people', kids)]);
+    return kids.length;
+  }
+  if (what === 'rooms') {
+    for (const r of rooms) await deleteRoomAll(r);
+    return rooms.length;
+  }
+  if (what === 'log') { const d = await store.getWhere('log', 'locationId', loc.id); await store.batch(delOps('log', d)); return d.length; }
+  if (what === 'leaders') {
+    const ops = [];
+    let n = 0;
+    for (const l of state.leaders) {
+      if (isOwnerL(l) || l.id === state.user.email || (!hasAccessIn(l, loc) && !adminOfL(l, loc.id))) continue;
+      if (l.admin && !isOwner()) continue;
+      const otherLocs = leaderLocs(l).filter((x) => x !== loc.id);
+      const otherRooms = (l.rooms || []).filter((id) => state.rooms.some((r) => r.id === id && r.locationId !== loc.id));
+      if (otherLocs.length || otherRooms.length) ops.push({ op: 'update', col: 'leaders', id: l.id, data: { locations: otherLocs, rooms: otherRooms } });
+      else ops.push({ op: 'delete', col: 'leaders', id: l.id }, { op: 'delete', col: 'usernames', id: usernameOf(l) });
+      n++;
+    }
+    await store.batch(ops);
+    state.leaderEdit = null;
+    return n;
+  }
+  return 0;
+}
 
 /* ---------- activity log (admins, one location + one week at a time) ---------- */
 let logUnsub = null;
@@ -521,7 +771,7 @@ function viewSettings() {
 
   // Each location lists only its own people (the owner isn't listed; they're everywhere).
   const leaders = [...state.leaders].sort(byName)
-    .filter((l) => !isOwnerL(l) && (hasAccessIn(l, loc) || adminOfL(l, loc.id) || state.leaderEdit === l.id));
+    .filter((l) => !isOwnerL(l) && (hasAccessIn(l, loc) || adminOfL(l, loc.id) || state.leaderEdit === l.id || (isOwner() && unassigned(l))));
   const leadersHtml = `
     <p class="muted small">People with access to <b>${esc(loc.name)}</b>.${myLocations().length > 1 ? ' Switch locations at the top for the others.' : ''}
       ${isOwner() ? '' : ' Only the owner can add or change admins.'}</p>
@@ -532,7 +782,7 @@ function viewSettings() {
         return `<li>
           <div class="row">
             <span class="grow"><b>${esc(l.name)}</b> <em class="badge">${roleOf(l)}</em>${self ? ' <small class="muted">you</small>' : ''}
-              <small class="email">Username: ${esc(usernameOf(l))}</small><small class="email">${esc(accessIn(l, loc))}</small></span>
+              <small class="email">Username: ${esc(usernameOf(l))}</small><small class="email">${unassigned(l) ? 'Not in any location yet' : esc(accessIn(l, loc))}</small></span>
             ${canEditLeader(l) ? `<button class="ghost small" data-act="editLeader" data-id="${esc(l.id)}">${editing ? 'Done' : 'Edit'}</button>` : ''}
           </div>
           ${editing ? `<div class="leader-edit">
@@ -567,7 +817,10 @@ function viewSettings() {
     ${locPicker}
     ${fold('rooms', `${esc(loc.name)} rooms`, locRooms.length, roomsHtml)}
     ${fold('leaders', 'Leaders', leaders.filter((l) => hasAccessIn(l, loc)).length, leadersHtml)}
-    ${fold('log', 'Activity log', '', logHtml(loc))}`;
+    ${fold('bulk', 'Add many leaders', '', bulkHtml(loc))}
+    ${fold('years', 'School years', yearsOf(loc).length ? currentYear(loc).name : '', yearsHtml(loc))}
+    ${fold('log', 'Activity log', '', logHtml(loc))}
+    ${fold('erase', 'Erase data', '', eraseHtml(loc))}`;
 
   if (!room) {
     return `${head}
@@ -774,14 +1027,62 @@ const actions = {
     if (roomsIn(loc.id).length) return alert(`Remove the rooms in ${loc.name} first.`);
     if (confirm(`Delete location "${loc.name}"?`)) store.remove('locations', loc.id);
   },
-  delRoom: (d) => {
+  delRoom: async (d) => {
     const r = state.rooms.find((x) => x.id === d.id);
     if (!r) return;
     if (state.rooms.length === 1) return alert("You can't delete the last room.");
     if (!adminOf(r.locationId)) return;
-    if (!confirm(`Delete room "${roomLabel(r)}"? Its kids and points will be hidden for good.`)) return;
+    if (!confirm(`Delete room "${roomLabel(r)}" and all its kids, point categories, points, and attendance? This can't be undone.`)) return;
     logIt(`Deleted room "${r.name}"`, 'del', nowWeek(), r);
-    store.remove('rooms', r.id);
+    try { await deleteRoomAll(r); toast(`Deleted ${esc(r.name)}.`); } catch (e) { console.error(e); showError('Could not delete all of that room. Try again.'); }
+  },
+  delYear: (d) => {
+    const loc = curLoc();
+    if (!loc || !adminOf(loc.id) || !confirm(`Remove the year "${d.name}"? No points are deleted; they just count toward the year before it.`)) return;
+    store.update('locations', loc.id, { years: (loc.years || []).filter((y) => y.id !== d.id) });
+    logIt(`Removed school year "${d.name}"`, 'del', nowWeek(), roomsIn(loc.id)[0]);
+  },
+  erase: async (d) => {
+    const loc = curLoc();
+    const [label, what] = ERASE[d.what] || [];
+    if (!loc || !label || !adminOf(loc.id)) return;
+    if (d.what === 'rooms' && state.rooms.every((r) => r.locationId === loc.id)) return alert("These are the app's only rooms. Add a room somewhere else first.");
+    const typed = prompt(`Erase ${what} in ${loc.name}?\n\nThis can't be undone. Type ERASE to confirm.`);
+    if (typed === null) return;
+    if (typed.trim().toUpperCase() !== 'ERASE') return alert('Nothing was erased.');
+    toast('Erasing…');
+    try {
+      const firstRoom = roomsIn(loc.id)[0];
+      const n = await eraseIn(loc, d.what);
+      if (d.what !== 'log' && d.what !== 'rooms') logIt(`Erased all ${label.toLowerCase()} (${n})`, 'del', nowWeek(), firstRoom);
+      toast(`Erased ${n} ${label.toLowerCase()} in ${esc(loc.name)}.`);
+    } catch (e) {
+      console.error(e);
+      showError('Some of it could not be erased. Check your connection and try again.');
+    }
+  },
+  bulkCancel: () => { state.bulk = null; },
+  bulkClose: () => { state.bulkResult = null; state.bulkText = ''; },
+  bulkRun: async () => {
+    const b = state.bulk;
+    if (!b) return;
+    const rows = b.rows.filter((r) => !r.error);
+    // People giving up a username go first, so others can take it.
+    rows.sort((x, y) => (y.existing ? 1 : 0) - (x.existing ? 1 : 0));
+    state.bulk = null;
+    const out = [];
+    for (const [i, r] of rows.entries()) {
+      state.bulkBusy = `${i + 1} of ${rows.length}`;
+      softRender();
+      try { out.push({ name: r.name, username: r.username, ok: true, msg: await bulkOne(r) }); }
+      catch (e) { console.error(e); out.push({ name: r.name, username: r.username, ok: false, msg: AUTH_ERRORS[e?.code] || e?.message || 'Failed' }); }
+    }
+    for (const r of b.rows.filter((x) => x.error)) out.push({ name: r.name, username: r.username, ok: false, msg: r.error });
+    state.bulkBusy = null;
+    state.bulkResult = out;
+    const loc = curLoc();
+    logIt(`Added/updated ${out.filter((x) => x.ok).length} leaders from a list`, 'add', nowWeek(), loc && roomsIn(loc.id)[0]);
+    toast(`Done: ${out.filter((x) => x.ok).length} of ${out.length}.`);
   },
 
   // leaders
@@ -1058,6 +1359,14 @@ const forms = {
       state.authMsg = 'Someone already set up this app. Ask them to add you.';
     }
   },
+  importPreview: (f) => {
+    const parsed = parseImport(f.get('text'));
+    if (!parsed.categories.length && !parsed.kids.length) {
+      alert('Nothing found. Make sure you have a line that says CATEGORIES or KIDS above each list.');
+      return false;
+    }
+    state.importPreview = parsed;
+  },
   addPerson: (f) => {
     const name = f.get('name').trim();
     store.add('people', { roomId: state.roomId, name });
@@ -1092,6 +1401,24 @@ const forms = {
       alert('Could not change your username. Please try again.');
       return false;
     }
+  },
+  bulkPreview: (f) => {
+    state.bulkText = f.get('text');
+    const suffix = String(f.get('suffix') || '').trim();
+    const rows = parseBulk(state.bulkText, suffix);
+    if (!rows.length) { alert('Nothing found. Put one person per line.'); return false; }
+    state.bulk = { rows };
+  },
+  addYear: (f) => {
+    const loc = state.locations.find((l) => l.id === f.get('locationId'));
+    if (!loc || !adminOf(loc.id)) return false;
+    const name = f.get('name').trim();
+    const start = weekStart(parseYmd(f.get('start')));
+    if ((loc.years || []).some((y) => y.start === start)) { alert('A year already starts that week.'); return false; }
+    store.update('locations', loc.id, { years: [...(loc.years || []), { id: newId(), name, start }] });
+    logIt(`Started school year "${name}" (week of ${weekLabel(start)})`, 'add', nowWeek(), roomsIn(loc.id)[0]);
+    state.board = 'year'; state.boardYear = null;
+    toast(`${esc(name)} starts the week of ${esc(weekLabel(start))}.`);
   },
   addLocation: (f) => {
     const max = Math.max(-1, ...state.locations.map((l) => l.order ?? 0));
@@ -1170,6 +1497,7 @@ app.addEventListener('change', (e) => {
   if (el.dataset.role === 'room') { setRoom(el.value); render(); return; }
   if (el.dataset.role === 'loc') { setLoc(el.value); render(); return; }
   if (el.dataset.role === 'logRoom') { state.logRoom = el.value; render(); return; }
+  if (el.dataset.role === 'boardYear') { state.boardYear = el.value; render(); return; }
   if (el.dataset.leader) {
     const l = state.leaders.find((x) => x.id === el.dataset.leader);
     if (!l) return;

@@ -182,3 +182,5 @@ select { width: 100%; padding: 12px; border: 1px solid var(--line); border-radiu
 .log-filter { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
 .log-filter select { flex: 1; }
 .seg.three { grid-template-columns: 1fr 1fr 1fr; }
+.preview .block, .leaders .block { display: block; }
+.danger.ghost { border-color: var(--danger); }
