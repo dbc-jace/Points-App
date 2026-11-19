@@ -1,6 +1,6 @@
-import { createStore, newId } from './store.js?v=2026.11.18-6';
+import { createStore, newId } from './store.js?v=2026.11.18-7';
 
-const APP_VERSION = '2026.11.18-6';
+const APP_VERSION = '2026.11.18-7';
 const APP_NAME = 'Points';
 // Username logins use a hidden, never-emailed address on a reserved domain.
 const LOGIN_DOMAIN = 'users.example.com';
@@ -1057,6 +1057,14 @@ const forms = {
       state.setupDone = true;
       state.authMsg = 'Someone already set up this app. Ask them to add you.';
     }
+  },
+  importPreview: (f) => {
+    const parsed = parseImport(f.get('text'));
+    if (!parsed.categories.length && !parsed.kids.length) {
+      alert('Nothing found. Make sure you have a line that says CATEGORIES or KIDS above each list.');
+      return false;
+    }
+    state.importPreview = parsed;
   },
   addPerson: (f) => {
     const name = f.get('name').trim();
